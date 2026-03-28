@@ -4,13 +4,14 @@ Implements custom data loading, preprocessing, and strict binary mask conversion
 """
 import os 
 import argparse 
+import random
 import torch 
 import numpy as np 
 from torch.utils.data import Dataset, DataLoader 
 from PIL import Image 
 import matplotlib.pyplot as plt 
-from torchvision import transforms 
-from typing import Tuple, Dict, Optional 
+from torchvision.transforms import v2 as transforms
+from typing import Tuple, Optional 
 
 class OxfordPetDataset(Dataset):
     """
@@ -21,45 +22,131 @@ class OxfordPetDataset(Dataset):
             self, 
             data_dir: str, 
             split: str = 'train', 
-            transform: Optional[transforms.Compose] = None,
-            target_transform: Optional[callable] = None
+            image_size: int = 256,
+            # is_train: bool = True, 
+            # transform: Optional[transforms.Compose] = None,
+            # target_transform: Optional[callable] = None
         ) -> None:
-        """
-        Initializes the dataset.
+        """Initializes the dataset by reading a split file and validating paths.
 
         Args:
-            data_dir (str): Root directory containing 'images' and 'annotations/trimaps' folders.
-            split (str): Dataset split to load ('train', 'val', 'test').
-            transform (callable, optional): Optional transform to be applied on a sample image.
-            target_transform (callable, optional): Optional transform to be applied on the mask.
+            data_dir (str): Root directory of the Oxford-IIIT Pet dataset,
+                containing ``images/`` and ``annotations/trimaps/``
+                subdirectories, plus ``<split>.txt`` files.
+            split (str): Name of the split file **without** the ``.txt``
+                extension (e.g. ``'train'``, ``'val'``, ``'test_unet'``,
+                ``'test_res_unet'``).
+            image_size (int): Target spatial size; images and masks are
+                resized to ``(image_size, image_size)``.
+            is_train (bool): If ``True``, apply random data augmentation
+                (horizontal flip, vertical flip, small rotation, colour
+                jitter). If ``False``, only deterministic resize is applied.
+
+        Raises:
+            FileNotFoundError: If the split file or any referenced image
+                file does not exist on disk.
         """
         super().__init__() 
         self.data_dir = data_dir
         self.split = split
-        self.transform = transform
-        self.target_transform = target_transform
+        self.image_size = image_size
+        self.is_train = split == "train"  # Only apply augmentation to training split
 
         self.images_dir = os.path.join(data_dir, "images")
         self.masks_dir = os.path.join(data_dir, "annotations", "trimaps")
 
+        # Image base transform (without random flips)
+        if self.is_train:
+            self.img_transform = transforms.Compose([
+                transforms.Resize((self.image_size, self.image_size)),
+                transforms.RandomAutocontrast(p=.2),
+                transforms.RandomApply(
+                    [transforms.GaussianBlur(kernel_size=(5, 5), sigma=(0.1, 2.0))],
+                    p=0.3,
+                ),
+                transforms.ToImage(), # Replaces ToTensor()
+                transforms.ToDtype(torch.float32, scale=True), # Scales 0-255 to 0.0-1.0
+                transforms.Normalize(
+                    mean=[0.485, 0.456, 0.406],
+                    std=[0.229, 0.224, 0.225]
+                )
+            ])
+        else:
+            self.img_transform = transforms.Compose([
+                transforms.Resize((self.image_size, self.image_size)),
+                transforms.ToImage(), # Replaces ToTensor()
+                transforms.ToDtype(torch.float32, scale=True), # Scales 0-255 to 0.0-1.0
+                transforms.Normalize(
+                    mean=[0.485, 0.456, 0.406],
+                    std=[0.229, 0.224, 0.225]
+                )
+            ])
+        
+        # Mask base transform (resize with NEAREST)
+        self.mask_transform = transforms.Compose([
+            transforms.Resize(
+                (self.image_size, self.image_size),
+                interpolation=transforms.InterpolationMode.NEAREST
+            ), 
+            transforms.ToImage(),  # Convert to image after resizing
+            transforms.ToDtype(torch.float32, scale=False)  # Do not divide by 255
+        ])
+
+        # --- Load split file ---
         split_file = os.path.join(data_dir, f"{split}.txt")
         if not os.path.exists(split_file):
-            raise FileNotFoundError(f"Split file '{split_file}' not found. Ensure it exists and is correctly formatted.")
+            raise FileNotFoundError(
+                f"Split file not found: {split_file}. "
+                f"Ensure it exists inside '{data_dir}'."
+            )
         
         self.image_filenames = [] 
         with open(split_file, 'r') as f:
-            lines = f.readlines()
-            for line in lines:
+            for line in f:
                 img_name = line.strip() + ".jpg"  # Assuming images are .jpg
-                self.image_filenames.append(img_name)
+                if img_name:
+                    self.image_filenames.append(img_name)
+        # with open(split_file, 'r') as f:
+        #     lines = f.readlines()
+        #     for line in lines:
+        #         img_name = line.strip() + ".jpg"  # Assuming images are .jpg
+        #         self.image_filenames.append(img_name)
 
-        # valid_extensions = ('.jpg', '.jpeg', '.png')
-        # self.image_filenames = [
-        #     f for f in os.listdir(self.images_dir)
-        #     if f.lower().endswith(valid_extensions) and not f.startswith('._')
-        # ]
         # Sort to ensure consistent ordering 
         self.image_filenames.sort() 
+        # --- Validate image files exist ---
+        self._validate_files() 
+
+    def _validate_files(self) -> None:
+        """Checks that all image files listed in the split file exist on disk.
+
+        Raises:
+            FileNotFoundError: If any image file is missing.
+        """
+        missing_images = [] 
+        missing_masks = []
+
+        for img_name in self.image_filenames:
+            img_path = os.path.join(self.images_dir, img_name)
+            if not os.path.exists(img_path):
+                missing_images.append(img_path)
+            # Check corresponding mask exists (for train/val splits)
+            mask_path = os.path.join(self.masks_dir, img_name.replace(".jpg", ".png"))
+            if self.split in ['train', 'val'] and not os.path.exists(mask_path):
+                missing_masks.append(mask_path)
+
+        if missing_images:
+            raise FileNotFoundError(
+                f"{len(missing_images)} image(s) listed in "
+                f"'{self.split}.txt' were not found. "
+                f"First 5: {missing_images[:5]}"
+            )
+
+        if missing_masks:
+            print(
+                f"[WARNING] {len(missing_masks)} mask(s) not found — they "
+                f"will default to all-background.  First 5: {missing_masks[:5]}"
+            )
 
     def __len__(self) -> int: 
         """
@@ -70,7 +157,7 @@ class OxfordPetDataset(Dataset):
         """
         return len(self.image_filenames) 
     
-    def _process_mask(self, mask_img:Image.Image) -> torch.Tensor:
+    def _process_mask(self, mask_img:Image.Image) -> Image.Image:
         """
         Converts the raw trimap to a binary mask according the lab specifications. 
         Tripmap values: 1 (Foreground), 2 (Background), 3 (Boundary). 
@@ -80,16 +167,16 @@ class OxfordPetDataset(Dataset):
             mask_img (Image.Image): The raw trimap image. 
 
         Returns:
-            torch.Tensor: The processed binary mask tensor of shape (1, H, W).
+            Image.Image: The processed binary mask image.
         """
         mask_np = np.array(mask_img) 
 
-        ## Initialise binary mask with zeros (background) 
-        binary_mask = np.zeros_like(mask_np, dtype=np.float32) 
-        binary_mask[mask_np == 1] = 1.0  # Set foreground pixels to 1
+        # --- Initialise binary mask with zeros (background) ---
+        binary_mask = np.zeros_like(mask_np, dtype=np.uint8) 
+        binary_mask[mask_np == 1] = 1  # Set foreground pixels to 1
         # Add channel dimension to match (C, H, W) format 
-        binary_mask = np.expand_dims(binary_mask, axis=0)
-        return torch.from_numpy(binary_mask)
+        # binary_mask = np.expand_dims(binary_mask, axis=0)
+        return Image.fromarray(binary_mask, mode='L')
     
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -108,25 +195,36 @@ class OxfordPetDataset(Dataset):
         base_name = os.path.splitext(img_name)[0]
         mask_path = os.path.join(self.masks_dir, f"{base_name}.png")
 
-        # Load image 
+        # --- Load images and their corresponding masks ---
         image = Image.open(img_path).convert("RGB")
 
         # Load mask if it exists, (test sets might not have masks available). 
-        if os.path.exists(mask_path):
-            mask = Image.open(mask_path) 
+        if self.split not in ["test_unet", "test_res_unet"]:
+            if not os.path.exists(mask_path):
+                raise FileNotFoundError(f"Missing mask for training/val image: {mask_path}")
+            raw_mask = Image.open(mask_path) 
+            mask = self._process_mask(raw_mask)
         else:
             # Fallback for inference on raw test sets without ground truth masks. 
             mask = Image.new("L", image.size, 0)  # Create an empty mask (all background)
 
-        if self.transform:
-            image = self.transform(image) 
+        # --- Apply transforms ---
+        if self.is_train:
+            if random.random() > 0.5:
+                image = image.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+                mask = mask.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+            if random.random() > 0.5:
+                image = image.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+                mask = mask.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+        # Apply base transforms (resize, colour jitter, etc.) to the image
+        image = self.img_transform(image) 
+        mask = self.mask_transform(mask)
 
-        # We process the mask manually, but target_transform can handle resizing 
-        if self.target_transform:
-            mask = self.target_transform(mask)
-
-        mask_tensor = self._process_mask(mask)
-        return image, mask_tensor
+        return {
+            'image': image,
+            'mask': mask,
+            'filename': img_name
+        }
     
 def visualize_sample(
         image_tensor: torch.Tensor,
@@ -167,34 +265,43 @@ if __name__ == "__main__":
     print(f"Initialising Dataset from: {args.data_dir}")
     print(f"Target Resolution: {args.img_size}x{args.img_size}")
 
-    # Define Transform 
-    img_transform = transforms.Compose([
-        transforms.Resize((args.img_size, args.img_size)),
-        transforms.ToTensor(),
-    ])
-    mask_transform = transforms.Resize(
-        (args.img_size, args.img_size), 
-        interpolation=transforms.InterpolationMode.NEAREST
-    )
+    # # Define Transform 
+    # img_transform = transforms.Compose([
+    #     transforms.Resize((args.img_size, args.img_size)),
+    #     transforms.ToTensor(),
+    # ])
+    # mask_transform = transforms.Resize(
+    #     (args.img_size, args.img_size), 
+    #     interpolation=transforms.InterpolationMode.NEAREST
+    # )
 
     dataset = OxfordPetDataset(
         data_dir=args.data_dir,
         split=args.split,
-        transform=img_transform,
-        target_transform=mask_transform
+        image_size=args.img_size,
+        # is_train=True,  # Enable data augmentation
     )
-    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
+    dataloader = DataLoader(
+        dataset, 
+        batch_size=args.batch_size, 
+        shuffle=dataset.is_train,  # Shuffle only if training
+        pin_memory=True,
+    )
     print(f"Dataset Size: {len(dataset)} samples")
     # Fetch a single batch and visualize the first sample
-    images, masks = next(iter(dataloader))
-    print(f"Batch Image Shape: {images.shape}, Batch Mask Shape: {masks.shape}")
-    # Verify binary constraints
-    unique_vals = torch.unique(masks)
-    print(f"Unique values in mask tensor: {unique_vals.tolist()}")
-    if not all(v in [0.0, 1.0] for v in unique_vals.tolist()):
-        print("WARNING: Mask contains invalid values! Your mapping logic is compromised.")
-    else:
-        print("SUCCESS: Mask is strictly binary.")
+    # Iterate through the dataloader to get a batch of images and masks
+    for batch in dataloader:
+        images = batch['image']
+        masks = batch['mask']
+        print(f"Batch Image Shape: {images.shape}, Batch Mask Shape: {masks.shape}")
+        # Verify binary constraints
+        unique_vals = torch.unique(masks)
+        print(f"Unique values in mask tensor: {unique_vals.tolist()}")
+        if not all(v in [0.0, 1.0] for v in unique_vals.tolist()):
+            print("WARNING: Mask contains invalid values! Your mapping logic is compromised.")
+        else:
+            print("SUCCESS: Mask is strictly binary.")
 
-    print("Displaying first sample from batch...")
-    visualize_sample(images[0], masks[0])
+        print("Displaying first sample from batch...")
+        visualize_sample(images[0], masks[0])
+        break
