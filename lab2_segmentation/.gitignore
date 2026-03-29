@@ -4,3 +4,4 @@ logs/
 *.png
 *.jpg 
 __pycache__/
+*.csv

@@ -3,7 +3,6 @@ import argparse
 import torch
 import torch.nn as nn 
 from torch.utils.data import DataLoader 
-from torch.amp import autocast, GradScaler
 from tqdm import tqdm 
 from typing import Tuple 
 
@@ -38,7 +37,7 @@ def train_epoch(
         criterion: nn.Module, 
         optimizer: torch.optim.Optimizer, 
         device: torch.device, 
-        scaler: GradScaler
+        scaler: torch.GradScaler
 ) -> float:
     """
     Executes one complete training epoch using Automatic Mixed Precision (AMP).
@@ -48,7 +47,7 @@ def train_epoch(
         dataloader (DataLoader): The training data loader.
         optimizer (torch.optim.Optimizer): The optimizer (e.g., AdamW).
         criterion (nn.Module): The loss function (e.g., BCEWithDiceLoss).
-        scaler (GradScaler): PyTorch AMP GradScaler to prevent gradient underflow.
+        scaler (torch.GradScaler): PyTorch AMP GradScaler to prevent gradient underflow.
         device (torch.device): The device to compute on ('cuda').
 
     Returns:
@@ -67,7 +66,7 @@ def train_epoch(
 
         # Training pipeline 
         optimizer.zero_grad(set_to_none=True)  # More efficient zeroing of gradients
-        with autocast("cuda"):
+        with torch.autocast("cuda"):
             logits = model(images)  # Forward pass: (B, 1, H, W)
             loss = criterion(logits, targets)  # Compute loss
         scaler.scale(loss).backward()  # Backpropagate with scaled loss
@@ -110,7 +109,7 @@ def validate_epoch(
             images = batch["image"].to(device, non_blocking=True)
             targets = batch["mask"].to(device, non_blocking=True)
 
-            with autocast("cuda"):
+            with torch.autocast("cuda"):
                 logits = model(images) 
                 loss = criterion(logits, targets)
             
@@ -163,16 +162,16 @@ def main() -> None:
 
     # --- Model Selection ---
     if args.model == 'unet':
-        model = UNet(in_channels=3, out_channels=1, base_c=32).to(device)
+        model = UNet(in_channels=3, out_channels=1, base_c=64).to(device)
     elif args.model == 'resnet34_unet':
         model = ResNet34_UNet(in_channels=3, out_channels=1).to(device)
     else:
         raise ValueError("Invalid model selected.")
 
     # --- Loss Function and Optimizer ---
-    criterion = BCEWithDiceLoss(bce_weight=0.5, dice_weight=0.5).to(device) 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
-    scaler = GradScaler("cuda")
+    criterion = BCEWithDiceLoss(bce_weight=0.2, dice_weight=0.8).to(device) 
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=5e-4)
+    scaler = torch.GradScaler("cuda")
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, 
         T_max=args.epochs, 
@@ -211,6 +210,7 @@ def main() -> None:
         print("-" * 20)
         
         # Train and Validate
+        torch.cuda.empty_cache()  # Clear GPU memory before each epoch
         train_loss = train_epoch(model, train_loader, criterion, optimizer, device, scaler)
         val_loss, val_dice = validate_epoch(model, val_loader, criterion, device)
         

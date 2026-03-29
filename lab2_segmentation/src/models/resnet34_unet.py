@@ -106,7 +106,12 @@ class BasicBlock(nn.Module):
     """
     expansion = 1
 
-    def __init__(self, in_channels: int, out_channels: int, stride: int = 1) -> None:
+    def __init__(
+            self, 
+            in_channels: int, 
+            out_channels: int, 
+            stride: int = 1
+    ) -> None:
         super().__init__()
         self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(out_channels)
@@ -153,9 +158,16 @@ class DecoderBlock(nn.Module):
         out_channels (int): Number of output channels.
         skip_channels (int): Number of channels from the skip connection.
     """
-    def __init__(self, in_channels: int, out_channels: int, skip_channels: int) -> None:
+    def __init__(
+            self, 
+            in_channels: int, 
+            # out_channels: int, 
+            skip_channels: int = 0
+    ) -> None:
         super().__init__()
         # Project the upsampled input down to 32 channels as per the schematic
+        out_channels = 32 + skip_channels  # Total channels after concatenation
+        self.skip_channels = skip_channels
         self.project = nn.Sequential(
             nn.Conv2d(in_channels, 32, kernel_size=1, bias=False),
             nn.BatchNorm2d(32),
@@ -172,7 +184,7 @@ class DecoderBlock(nn.Module):
         )
         self.cbam = CBAM(out_channels)
 
-    def forward(self, x: torch.Tensor, skip: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, skip: torch.Tensor = None) -> torch.Tensor:
         """
         Forward pass for DecoderBlock. Upsamples input and concatenates with skip connection.
         
@@ -185,7 +197,8 @@ class DecoderBlock(nn.Module):
         """
         x = F.interpolate(x, size=skip.shape[2:], mode='bilinear', align_corners=True)
         x = self.project(x)
-        x = torch.cat([x, skip], dim=1)
+        if self.skip_channels != 0:
+            x = torch.cat([x, skip], dim=1)
         x = self.conv(x)
         x = self.cbam(x)
         return x
@@ -213,19 +226,38 @@ class ResNet34_UNet(nn.Module):
         self.layer1 = self._make_layer(64, 64, 3, stride=1)   # Output: 64 channels
         self.layer2 = self._make_layer(64, 128, 4, stride=2)  # Output: 128 channels
         self.layer3 = self._make_layer(128, 256, 6, stride=2) # Output: 256 channels
-        self.layer4 = self._make_layer(256, 512, 3, stride=2) # Output: 512 channels (Bottleneck)
+        self.layer4 = self._make_layer(256, 512, 3, stride=2) # Output: 512 channels
+        self.bottleneck = nn.Conv2d(512, 256, kernel_size=1, bias=False)  # Bottleneck to maintain channel size for decoder
+        self.bottleneck_bn = nn.BatchNorm2d(256)
+        self.bottleneck_relu = nn.ReLU(inplace=True)
 
         # --- DECODER (UNet style with CBAM)  ---
         # DecoderBlock(in_ch, skip_ch, out_ch)
-        self.dec4 = DecoderBlock(in_channels=512, skip_channels=256, out_channels=256)
-        self.dec3 = DecoderBlock(in_channels=256, skip_channels=128, out_channels=128)
-        self.dec2 = DecoderBlock(in_channels=128, skip_channels=64, out_channels=64)
-        self.dec1 = DecoderBlock(in_channels=64, skip_channels=64, out_channels=64)
+        self.dec4 = DecoderBlock(
+            in_channels=512+256, 
+            skip_channels=256, 
+            # out_channels=256
+        )
+        self.dec3 = DecoderBlock(
+            in_channels=32+256, 
+            skip_channels=128, 
+            # out_channels=128
+        )
+        self.dec2 = DecoderBlock(
+            in_channels=32+128, 
+            skip_channels=64, 
+            # out_channels=64
+        )
+        self.dec1 = DecoderBlock(
+            in_channels=32+64, 
+            skip_channels=0, 
+            # out_channels=64
+        )
 
-        # Final mapping blocks to reach output channels [cite: 136, 137]
+        # Final mapping blocks to reach output channels
         self.final_conv = nn.Sequential(
-            # nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
-            nn.Conv2d(64, 32, kernel_size=3, padding=1, bias=False),
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),
+            nn.Conv2d(32, 32, kernel_size=3, padding=1, bias=False),
             nn.BatchNorm2d(32),
             nn.ReLU(inplace=True),
             nn.Conv2d(32, out_channels, kernel_size=1)
@@ -273,18 +305,25 @@ class ResNet34_UNet(nn.Module):
         e1 = self.layer1(x_pool) # Skip 2 (64 channels)
         e2 = self.layer2(e1)     # Skip 3 (128 channels)
         e3 = self.layer3(e2)     # Skip 4 (256 channels)
-        e4 = self.layer4(e3)     # Bottleneck (512 channels)
+        e4 = self.layer4(e3)     # Skip 5 (512 channels)
+
+        # Bottleneck 
+        b = self.bottleneck(e4)
+        b = self.bottleneck_bn(b)
+        b = torch.concat([b, e4], dim=1)  # Concatenate bottleneck with last encoder output for richer features
+        b = self.bottleneck_relu(b)
 
         # Decoder Stage
-        d4 = self.dec4(e4, e3)
+        d4 = self.dec4(b, e3)
         d3 = self.dec3(d4, e2)
         d2 = self.dec2(d3, e1)
-        d1 = self.dec1(d2, e0)
+        d1 = self.dec1(d2, e0)  # No skip connection for the last decoder block
 
         # Final projection to original size and target classes
         out = self.final_conv(d1)
-        # Upsample back to original input resolution (e.g., from 128x128 back to 256x256)
-        out = F.interpolate(out, size=x.shape[2:], mode='bilinear', align_corners=True)
+        # Upsample back to original input resolution if img_size % 16 != 0
+        if x.shape[2] % 16 != 0:
+            out = F.interpolate(out, size=x.shape[2:], mode='bilinear', align_corners=True)
         return out
 
 if __name__ == "__main__":
@@ -303,12 +342,8 @@ if __name__ == "__main__":
     
     print(f"Input shape: {dummy_input.shape}")
     
-    try:
-        output = model(dummy_input)
-        print(f"Output shape: {output.shape}")
-        if output.shape[2:] != dummy_input.shape[2:]:
-            print("WARNING: Input and output spatial dimensions do not match!")
-        else:
-            print("SUCCESS: Forward pass complete and shapes map correctly.")
-    except Exception as e:
-        print(f"FAILED: {e}")
+    output = model(dummy_input)
+    print(f"Output shape: {output.shape}")
+
+    from torchinfo import summary
+    summary(model, input_size=(args.batch_size, 3, args.img_size, args.img_size))

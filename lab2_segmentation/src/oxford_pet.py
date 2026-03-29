@@ -22,7 +22,7 @@ class OxfordPetDataset(Dataset):
             self, 
             data_dir: str, 
             split: str = 'train', 
-            image_size: int = 256,
+            image_size: int = 572,
             # is_train: bool = True, 
             # transform: Optional[transforms.Compose] = None,
             # target_transform: Optional[callable] = None
@@ -88,6 +88,7 @@ class OxfordPetDataset(Dataset):
                 (self.image_size, self.image_size),
                 interpolation=transforms.InterpolationMode.NEAREST
             ), 
+            transforms.CenterCrop(388) if self.image_size == 572 else transforms.Lambda(lambda x: x),  # Crop to 388x388 to match UNet output size (after 4 downsamplings)
             transforms.ToImage(),  # Convert to image after resizing
             transforms.ToDtype(torch.float32, scale=False)  # Do not divide by 255
         ])
@@ -216,6 +217,10 @@ class OxfordPetDataset(Dataset):
             if random.random() > 0.5:
                 image = image.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
                 mask = mask.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+            if random.random() > 0.5:
+                angle = random.uniform(-15, 15)
+                image = image.rotate(angle, resample=Image.Resampling.BILINEAR)
+                mask = mask.rotate(angle, resample=Image.Resampling.NEAREST)
         # Apply base transforms (resize, colour jitter, etc.) to the image
         image = self.img_transform(image) 
         mask = self.mask_transform(mask)

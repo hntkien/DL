@@ -13,11 +13,11 @@ class DoubleConv(nn.Module):
     def __init__(self, in_channel: int, out_channel: int) -> None:
         super().__init__()
         self.net = nn.Sequential(
-            nn.Conv2d(in_channel, out_channel, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(out_channel),
+            nn.Conv2d(in_channel, out_channel, kernel_size=3, padding=0, bias=False),
+            # nn.BatchNorm2d(out_channel),
             nn.ReLU(inplace=True),
-            nn.Conv2d(out_channel, out_channel, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(out_channel),
+            nn.Conv2d(out_channel, out_channel, kernel_size=3, padding=0, bias=False),
+            # nn.BatchNorm2d(out_channel),
             nn.ReLU(inplace=True),
         )
 
@@ -135,7 +135,7 @@ class UNet(nn.Module):
             torch.Tensor: Unnormalized logit predictions of shape (B, out_channels, H, W).
         """
         # --- Encoder ---
-        e1 = self.enc1(x)                       # (B, 64, H,    W)
+        e1 = self.enc1(x)                       # (B, 64 , H  ,  W  )
         e2 = self.enc2(self.pool(e1))           # (B, 128, H/2,  W/2)
         e3 = self.enc3(self.pool(e2))           # (B, 256, H/4,  W/4)
         e4 = self.enc4(self.pool(e3))           # (B, 512, H/8,  W/8)
