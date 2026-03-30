@@ -170,7 +170,7 @@ def main() -> None:
 
     # --- Loss Function and Optimizer ---
     criterion = BCEWithDiceLoss(bce_weight=0.2, dice_weight=0.8).to(device) 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=5e-4)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     scaler = torch.GradScaler("cuda")
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, 

@@ -50,6 +50,7 @@ class OxfordPetDataset(Dataset):
         self.data_dir = data_dir
         self.split = split
         self.image_size = image_size
+        self.mask_size = 388 if image_size == 572 else image_size  # UNet output size after 4 downsamplings
         self.is_train = split == "train"  # Only apply augmentation to training split
 
         self.images_dir = os.path.join(data_dir, "images")
@@ -59,11 +60,22 @@ class OxfordPetDataset(Dataset):
         if self.is_train:
             self.img_transform = transforms.Compose([
                 transforms.Resize((self.image_size, self.image_size)),
-                transforms.RandomAutocontrast(p=.2),
+                # transforms.RandomApply(
+                #     [transforms.ColorJitter(brightness=0.5, contrast=0.2, saturation=0.2, hue=0.3)],
+                #     p=0.5
+                # ),
+                transforms.RandomPhotometricDistort(p=.2),
+                transforms.RandomPosterize(bits=4, p=0.2),
+                transforms.RandomAdjustSharpness(sharpness_factor=2.0, p=0.2),
+                # transforms.RandomAutocontrast(p=.2),
                 transforms.RandomApply(
                     [transforms.GaussianBlur(kernel_size=(5, 5), sigma=(0.1, 2.0))],
-                    p=0.3,
+                    p=0.1,
                 ),
+                # transforms.RandomApply(
+                #     [transforms.GaussianNoise(mean=0.0, sigma=0.1)],
+                #     p=0.5
+                # ),
                 transforms.ToImage(), # Replaces ToTensor()
                 transforms.ToDtype(torch.float32, scale=True), # Scales 0-255 to 0.0-1.0
                 transforms.Normalize(
@@ -85,10 +97,10 @@ class OxfordPetDataset(Dataset):
         # Mask base transform (resize with NEAREST)
         self.mask_transform = transforms.Compose([
             transforms.Resize(
-                (self.image_size, self.image_size),
+                (self.mask_size, self.mask_size),
                 interpolation=transforms.InterpolationMode.NEAREST
             ), 
-            transforms.CenterCrop(388) if self.image_size == 572 else transforms.Lambda(lambda x: x),  # Crop to 388x388 to match UNet output size (after 4 downsamplings)
+            # transforms.CenterCrop(388) if self.image_size == 572 else transforms.Lambda(lambda x: x),  # Crop to 388x388 to match UNet output size (after 4 downsamplings)
             transforms.ToImage(),  # Convert to image after resizing
             transforms.ToDtype(torch.float32, scale=False)  # Do not divide by 255
         ])
@@ -217,10 +229,10 @@ class OxfordPetDataset(Dataset):
             if random.random() > 0.5:
                 image = image.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
                 mask = mask.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
-            if random.random() > 0.5:
-                angle = random.uniform(-15, 15)
-                image = image.rotate(angle, resample=Image.Resampling.BILINEAR)
-                mask = mask.rotate(angle, resample=Image.Resampling.NEAREST)
+            # if random.random() > 0.5:
+            #     angle = random.uniform(-15, 15)
+            #     image = image.rotate(angle, resample=Image.Resampling.BILINEAR)
+            #     mask = mask.rotate(angle, resample=Image.Resampling.NEAREST)
         # Apply base transforms (resize, colour jitter, etc.) to the image
         image = self.img_transform(image) 
         mask = self.mask_transform(mask)
@@ -232,28 +244,37 @@ class OxfordPetDataset(Dataset):
         }
     
 def visualize_sample(
-        image_tensor: torch.Tensor,
-        mask_tensor: torch.Tensor,
+        image_tensors: torch.Tensor,
+        mask_tensors: torch.Tensor,
+        num_images: int = 1
 ) -> None: 
     """
     Visualizes a single image and its corresponding binary mask side-by-side.
     
     Args:
-        image_tensor (torch.Tensor): The image tensor of shape (C, H, W).
-        mask_tensor (torch.Tensor): The mask tensor of shape (1, H, W).
+        image_tensors (torch.Tensor): The image tensor of shape (C, H, W).
+        mask_tensors (torch.Tensor): The mask tensors of shape (1, H, W).
     """
-    img_np = image_tensor.permute(1, 2, 0).numpy()  # Convert to (H, W, C) for visualization
-    img_np = np.clip(img_np, 0, 1)  # Ensure pixel values are in [0, 1]
-    mask_np = mask_tensor.squeeze(0).numpy()  # Convert to (H, W)
+    img_nps = []
+    mask_nps = []
+    for i in range(num_images):
+        image_tensor = image_tensors[i]
+        mask_tensor = mask_tensors[i]
+        img_np = image_tensor.permute(1, 2, 0).numpy()  # Convert to (H, W, C) for visualization
+        img_np = np.clip(img_np, 0, 1)  # Ensure pixel values are in [0, 1]
+        mask_np = mask_tensor.squeeze(0).numpy()  # Convert to (H, W)
+        img_nps.append(img_np)
+        mask_nps.append(mask_np)
+    fig, axes = plt.subplots(2, num_images, figsize=(10,5)) 
+    for i in range(num_images):
+        axes[0, i].imshow(img_nps[i]) 
+        axes[0, i].set_title("Input Image")
+        axes[0, i].axis('off')
 
-    fig, axes = plt.subplots(1, 2, figsize=(10,5)) 
-    axes[0].imshow(img_np) 
-    axes[0].set_title("Input Image")
-    axes[0].axis('off')
-
-    axes[1].imshow(mask_np, cmap='viridis')
-    axes[1].set_title("Binary Mask")
-    axes[1].axis('off')
+        axes[1, i].imshow(mask_nps[i], cmap='viridis')
+    for i in range(num_images):
+        axes[1, i].set_title("Binary Mask")
+        axes[1, i].axis('off')
 
     plt.tight_layout() 
     plt.show()
@@ -308,5 +329,5 @@ if __name__ == "__main__":
             print("SUCCESS: Mask is strictly binary.")
 
         print("Displaying first sample from batch...")
-        visualize_sample(images[0], masks[0])
+        visualize_sample(images, masks, num_images=images.shape[0])
         break
