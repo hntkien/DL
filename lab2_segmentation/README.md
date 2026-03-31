@@ -23,7 +23,7 @@ For this lab, the trimap must be converted into a binary mask:
 The `src/oxford_pet.py` contains the `OxfordPetDataset` which read the images and their corresponding masks, and perform several transformation techniques. To ensure the dataset is successfully loaded and processed, visualise it by running: 
 
 ```bash
-python3 src/oxford_pet.py --data-dir ./dataset/oxford-iiit-pet/ 
+python3 src/oxford_pet.py --data-dir ${dataset_directory} 
 ```
 
 ## Training 
@@ -31,12 +31,12 @@ python3 src/oxford_pet.py --data-dir ./dataset/oxford-iiit-pet/
 To train the Vanilla UNet, run: 
 
 ```bash
-python3 src/train.py --data_dir ./dataset/oxford-iiit-pet --model unet --image_size 572 
+python3 src/train.py --data_dir ${dataset_directory} --model unet --image_size 572 
 ```
 
 or 
 ```bash
-python3 src/train.py --data_dir ./dataset/oxford-iiit-pet --model resnet34_unet --image_size 512 
+python3 src/train.py --data_dir ${dataset_directory} --model resnet34_unet --image_size 512 
 ```
 to train the ResNet34+UNet. 
 
