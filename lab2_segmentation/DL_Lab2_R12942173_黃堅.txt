@@ -1,0 +1,16 @@
+## Dataset Pre-processing
+
+`OxfordPetDataset` in `src/oxford_pet.py` loads split IDs, images, and masks, and checks for missing files. Masks: trimap-to-binary conversion, nearest-neighbor resize, tensor conversion, and center-crop to UNet output size (input 572, output 388). Images: resize, tensor conversion, and ImageNet mean/std normalization. Training adds photometric/appearance augmentations (distortion, posterize, sharpness, Gaussian blur) plus horizontal/vertical flips applied with masks.
+
+## Model Architecture
+
+1. U-Net (`src/models/unet.py`): original unpadded convs, center-crop skip concat, Kaiming init.
+2. ResNet34-UNet + CBAM (`src/models/resnet34_unet.py`): ResNet34 encoder (stem + blocks [3,4,6,3]), 1x1 bottleneck concat with deepest features, decoder with bilinear upsample, 32-channel projection, skip concat, conv refinement, CBAM attention, and a final head to logits.
+
+## Training Strategy 
+
+Shared pipeline in `src/train.py` for both models. Loss combines BCE and Dice to balance pixel accuracy and region overlap; Dice is weighted higher (0.8). Optimization uses AdamW with lr 1e-3 and weight decay 1e-4. Mixed precision is enabled to fit 8GB GPU memory and speed up training. A cosine annealing scheduler smooths LR decay across epochs. Early stopping monitors validation Dice with patience 10. Training can resume from checkpoints if interrupted.
+
+## AI Usage 
+
+I used Gemini to revise and adapt my code for the lab, based on my prior UNet work from last semester (Deep Learning for Computer Vision, Prof. Yu-Chiang Wang). I also asked for suggestions on optimization and submission details, including UNet center-cropping, gradient clipping, and RLE submission format. Report was shortened by Copilot to meet the 2000-character limit. 

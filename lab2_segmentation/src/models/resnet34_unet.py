@@ -184,7 +184,7 @@ class DecoderBlock(nn.Module):
         )
         self.cbam = CBAM(out_channels)
 
-    def forward(self, x: torch.Tensor, skip: torch.Tensor = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, skip: torch.Tensor) -> torch.Tensor:
         """
         Forward pass for DecoderBlock. Upsamples input and concatenates with skip connection.
         
@@ -280,10 +280,28 @@ class ResNet34_UNet(nn.Module):
         return nn.Sequential(*layers)
 
     def _initialize_weights(self) -> None:
-        """Kaiming normal initialization."""
-        for m in self.modules():
+        """Kaiming normal initialization for encoder/decoder."""
+        encoder_roots = {
+            "conv1",
+            "layer1",
+            "layer2",
+            "layer3",
+            "layer4",
+            "bottleneck",
+            "bottleneck_bn",
+        }
+        decoder_roots = {"dec4", "dec3", "dec2", "dec1", "final_conv"}
+
+        for name, m in self.named_modules():
+            root = name.split(".")[0]
             if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if root in encoder_roots:
+                    mode = "fan_in"
+                elif root in decoder_roots:
+                    mode = "fan_out"
+                else:
+                    continue
+                nn.init.kaiming_normal_(m.weight, mode=mode, nonlinearity="relu")
             elif isinstance(m, nn.BatchNorm2d):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)

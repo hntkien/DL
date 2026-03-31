@@ -88,11 +88,19 @@ class UNet(nn.Module):
         * ``Conv2d`` / ``ConvTranspose2d``: Kaiming-normal (fan_out, ReLU).
         * ``BatchNorm2d``: weight = 1, bias = 0.
         """
-        for m in self.modules():
+        encoder_roots = {"enc1", "enc2", "enc3", "enc4", "bottleneck"}
+        decoder_roots = {"up4", "dec4", "up3", "dec3", "up2", "dec2", "up1", "dec1", "final"}
+
+        for name, m in self.named_modules():
+            root = name.split(".")[0]
             if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d)):
-                nn.init.kaiming_normal_(
-                    m.weight, mode="fan_out", nonlinearity="relu"
-                )
+                if root in encoder_roots:
+                    mode = "fan_in"
+                elif root in decoder_roots:
+                    mode = "fan_out"
+                else:
+                    continue
+                nn.init.kaiming_normal_(m.weight, mode=mode, nonlinearity="relu")
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
             elif isinstance(m, nn.BatchNorm2d):

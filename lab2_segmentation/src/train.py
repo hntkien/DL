@@ -70,6 +70,7 @@ def train_epoch(
             logits = model(images)  # Forward pass: (B, 1, H, W)
             loss = criterion(logits, targets)  # Compute loss
         scaler.scale(loss).backward()  # Backpropagate with scaled loss
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         scaler.step(optimizer)  # Update weights
         scaler.update()  # Update the scale for next iteration
         running_loss += loss.item()  # Accumulate total loss
@@ -149,14 +150,14 @@ def main() -> None:
         train_dataset, 
         batch_size=args.batch_size, 
         shuffle=train_dataset.is_train, 
-        num_workers=1, 
+        # num_workers=4, 
         pin_memory=True
     )
     val_loader = DataLoader(
         val_dataset, 
         batch_size=args.batch_size, 
         shuffle=False, 
-        num_workers=4, 
+        # num_workers=4, 
         pin_memory=True
     )
 
@@ -192,7 +193,7 @@ def main() -> None:
     if args.resume:
         if os.path.isfile(args.resume):
             print(f"Resuming training from checkpoint: {args.resume}")
-            checkpoint = torch.load(args.resume, map_location=device)
+            checkpoint = torch.load(args.resume, map_location=device, weights_only=True)
             model.load_state_dict(checkpoint['model_state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             if checkpoint.get('scheduler_state_dict'):

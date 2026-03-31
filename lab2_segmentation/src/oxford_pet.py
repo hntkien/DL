@@ -65,7 +65,7 @@ class OxfordPetDataset(Dataset):
                 #     p=0.5
                 # ),
                 transforms.RandomPhotometricDistort(p=.2),
-                transforms.RandomPosterize(bits=4, p=0.2),
+                transforms.RandomPosterize(bits=2, p=0.2),
                 transforms.RandomAdjustSharpness(sharpness_factor=2.0, p=0.2),
                 # transforms.RandomAutocontrast(p=.2),
                 transforms.RandomApply(
@@ -97,10 +97,11 @@ class OxfordPetDataset(Dataset):
         # Mask base transform (resize with NEAREST)
         self.mask_transform = transforms.Compose([
             transforms.Resize(
-                (self.mask_size, self.mask_size),
+                (self.image_size, self.image_size),
                 interpolation=transforms.InterpolationMode.NEAREST
             ), 
-            # transforms.CenterCrop(388) if self.image_size == 572 else transforms.Lambda(lambda x: x),  # Crop to 388x388 to match UNet output size (after 4 downsamplings)
+            # transforms.CenterCrop(self.mask_size), 
+            transforms.CenterCrop(388) if self.image_size == 572 else transforms.Lambda(lambda x: x),  # Crop to 388x388 to match UNet output size (after 4 downsamplings)
             transforms.ToImage(),  # Convert to image after resizing
             transforms.ToDtype(torch.float32, scale=False)  # Do not divide by 255
         ])
