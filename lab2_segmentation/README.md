@@ -45,7 +45,8 @@ You can change the hyperparameters such as the batch size, the learning rate, an
 ```bash 
 python3 src/train.py --data_dir ${dataset_directory} --model ${unet or resnet34_unet} --image_size ${image_size} --batch_size ${batch_size} --epochs ${epochs} --lr ${lr} --patience ${num_epochs_for_early_stopping} --save_dir ${ckpt_saved_directory} --resume ${path_to_saved_ckpt}
 ```
-
+ **Note:** Currently, the training for UNet only support the input size of 572, and the output size to crop the masks is fixed at 388, due to the difficulty in computing the varying output size. 
+ 
 ## Inference 
 
 ```bash 

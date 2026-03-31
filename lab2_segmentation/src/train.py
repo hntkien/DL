@@ -150,14 +150,14 @@ def main() -> None:
         train_dataset, 
         batch_size=args.batch_size, 
         shuffle=train_dataset.is_train, 
-        # num_workers=4, 
+        num_workers=4, 
         pin_memory=True
     )
     val_loader = DataLoader(
         val_dataset, 
         batch_size=args.batch_size, 
         shuffle=False, 
-        # num_workers=4, 
+        num_workers=4, 
         pin_memory=True
     )
 

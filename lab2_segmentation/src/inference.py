@@ -90,12 +90,20 @@ def main() -> None:
                 
                 # Extract the single prediction tensor: shape (1, 1, 256, 256)
                 pred_tensor = preds_binary[i].unsqueeze(0)
+
+                if args.model == 'unet':
+                    # Calculate padding: (572 - 388) // 2 = 92
+                    diff = args.image_size - pred_tensor.shape[-1]
+                    pad_size = diff // 2
+                    # Pad (left, right, top, bottom)
+                    pred_tensor = F.pad(pred_tensor, (pad_size, pad_size, pad_size, pad_size), value=0)
                 
                 # Upsample back to original size using NEAREST interpolation to keep it strictly binary
                 pred_resized = F.interpolate(
                     pred_tensor, 
                     size=(orig_h, orig_w), 
-                    mode='nearest'
+                    mode='nearest', 
+                    # align_corners=False
                 )
                 
                 # Squeeze to (H, W) and convert to numpy for RLE encoding
