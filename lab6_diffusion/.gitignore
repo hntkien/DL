@@ -1,0 +1,6 @@
+*.png
+*.pth
+*.pt
+__pycache__/
+*.log
+report.md
