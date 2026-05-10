@@ -42,6 +42,7 @@ class UNet(nn.Module):
     ) -> None: 
         super().__init__() 
         time_dim = channel * 4  # Time embedding dimension (must match the output of ConditionEmbedding)
+        self.num_classes = num_classes
         for ch_width in [channel, channel * 2, channel * 4]:
             if ch_width % num_groups != 0:
                 raise ValueError(f"Channel width {ch_width} is not divisible by num_groups {num_groups}. Please choose a compatible combination.")
