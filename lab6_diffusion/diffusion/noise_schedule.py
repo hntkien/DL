@@ -60,6 +60,18 @@ class NoiseSchedule(nn.Module):
             cosine_s: float = 0.008,
     ) -> None: 
         super().__init__() 
+        # Defensive casting in case YAML or CLI inputs arrive as strings.
+        try:
+            num_timesteps = int(num_timesteps)
+            beta_start = float(beta_start)
+            beta_end = float(beta_end)
+            cosine_s = float(cosine_s)
+        except (TypeError, ValueError) as exc:
+            raise TypeError(
+                "NoiseSchedule expects numeric values for num_timesteps, beta_start, "
+                "beta_end, and cosine_s."
+            ) from exc
+
         self.num_timesteps = num_timesteps
         self.schedule = schedule
 
