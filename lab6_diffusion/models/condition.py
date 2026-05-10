@@ -1,7 +1,7 @@
 import torch 
 import torch.nn as nn
 import math
-from blocks import linear, Swish
+from models.blocks import linear, Swish
 
 # ---------------------------------------------------------------------------
 # Time (sinusoidal) embedding
