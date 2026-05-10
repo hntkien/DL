@@ -1,6 +1,6 @@
 import torch 
 import torch.nn as nn 
-from blocks import (
+from models.blocks import (
     Downsample, 
     ResBlockWithAttention, 
     Swish, 
@@ -8,7 +8,7 @@ from blocks import (
     conv2d, 
     linear
 )
-from condition import TimeEmbedding, ConditionEmbedding
+from models.condition import TimeEmbedding, ConditionEmbedding
     
 # ---------------------------------------------------------------------------
 # U-Net
