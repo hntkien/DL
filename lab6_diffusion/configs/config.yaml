@@ -1,0 +1,78 @@
+# configs/default.yaml
+# All paths are relative to the project root.
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+paths:
+  image_dir:      "data/iclevr"
+  train_json:     "data/train.json"
+  test_json:      "data/test.json"
+  new_test_json:  "data/new_test.json"
+  objects_json:   "data/objects.json"
+  ckpt_dir:       "ckpts"
+  output_dir:     "outputs"
+
+# ---------------------------------------------------------------------------
+# Dataset
+# ---------------------------------------------------------------------------
+dataset:
+  image_size:   64
+  drop_prob:    0.1       # CFG condition drop probability during training
+  augment:      true      # RandomHorizontalFlip (only safe augmentation)
+  num_workers:  4
+
+# ---------------------------------------------------------------------------
+# Model (UNet)
+# ---------------------------------------------------------------------------
+model:
+  in_channel:      3
+  channel:         128       # base width; stages use channel×1, ×2, ×4
+  num_classes:     24
+  attn_heads:      1
+  use_affine_time: false     # additive conditioning; set true for AdaGN
+  dropout:         0.1
+  num_groups:      32        # GroupNorm groups; must divide channel, ×2, ×4
+  mode:            "fan_avg" # "fan_in"/"fan_out"/"fan_avg"
+  distribution:    "uniform" # "uniform"/"normal" 
+
+# ---------------------------------------------------------------------------
+# Noise schedule
+# ---------------------------------------------------------------------------
+schedule:
+  schedule:      "linear"   # "linear" | "cosine"
+  num_timesteps: 1000
+  beta_start:    1e-4       # linear schedule only
+  beta_end:      0.02       # linear schedule only
+  cosine_s:      0.008      # cosine schedule only
+
+# ---------------------------------------------------------------------------
+# Training
+# ---------------------------------------------------------------------------
+training:
+  batch_size:        64
+  num_epochs:        100
+  lr:                2.0e-4
+  lr_warmup_steps:   500     # linear warmup before constant LR
+  grad_clip:         1.0     # max gradient norm; 0 to disable
+  ema_decay:         0.9999  # EMA of model weights for stable sampling
+  mixed_precision:   true    # torch.autocast fp16
+  log_every:         100     # steps between loss logs
+  save_every:        5       # epochs between periodic checkpoint saves
+  resume_ckpt:       ""      # path to checkpoint to resume from; "" = fresh start
+
+# ---------------------------------------------------------------------------
+# Sampling / inference
+# ---------------------------------------------------------------------------
+sampling:
+  guidance_scale:       2.0   # CFG weight w; 1.0 = no guidance
+  batch_size:           32    # must cover full test set (32 samples)
+  save_grid:            true  # save image grid alongside individual images
+  grid_nrow:            8     # images per row in the saved grid
+# ---------------------------------------------------------------------------
+# Early stopping
+# ---------------------------------------------------------------------------
+early_stopping:
+  patience:    20      # epochs to wait for improvement before stopping
+  min_delta:   1e-4    # minimum absolute loss improvement to count as better
+  min_epochs:  20      # never stop before this many epochs

@@ -15,13 +15,13 @@ The zero vector (all zeros) serves as the null/unconditional token for CFG.
 import json 
 import os 
 from pathlib import Path 
-from typing import Optional, Dict, List, Tuple
+from typing import Dict, List, Tuple
 
 import torch 
 from PIL import Image 
 from torch.utils.data import DataLoader, Dataset 
 from torchvision.transforms import v2 as T 
-from utils import load_label_map, encode_labels
+from utils.utils import load_label_map, encode_labels
 
 def build_transform(image_size: int = 64, augment: bool = False) -> T.Compose:
     """Build the standard image transform pipeline.
@@ -166,6 +166,7 @@ def get_train_loader(
         batch_size: int = 64,
         image_size: int = 64,
         drop_prob: float = 0.1,
+        augment: bool = True,
         num_workers: int = 4,
 ) -> DataLoader:
     """Build a DataLoader for the training split. 
@@ -188,6 +189,7 @@ def get_train_loader(
         objects_json=objects_json,
         image_size=image_size,
         drop_prob=drop_prob,
+        augment=augment,
     )
     return DataLoader(
         dataset, 

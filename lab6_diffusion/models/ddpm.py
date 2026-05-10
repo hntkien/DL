@@ -90,12 +90,12 @@ class DDPM(nn.Module):
             t = torch.full((B,), step, device=device, dtype=torch.long) 
 
             # --- CFG: Combine conditional and unconditional predictions ---
-            if guidance_scale != 1.0:
+            if guidance_scale > 1.0:
                 # Batch the two forward passes for efficiency.
                 x_in = torch.cat([x, x], dim=0)  # (2B, C, H, W)
                 t_in = torch.cat([t, t], dim=0)  # (2B,)
-                c_in = torch.cat([null_cond, condition], dim=0)  # (2B, num_classes)
-                eps_uncond, eps_cond = self.model(x_in, t_in, c_in).chunk(2, dim=0)  # Each is (B, C, H, W)
+                c_in = torch.cat([condition, null_cond], dim=0)   # (2B, num_classes)
+                eps_cond, eps_uncond = self.model(x_in, t_in, c_in).chunk(2, dim=0)  # Each is (B, C, H, W)
                 eps = eps_uncond + guidance_scale * (eps_cond - eps_uncond)  # (B, C, H, W)
             else:
                 eps = self.model(x, t, condition)  # (B, C, H, W)
