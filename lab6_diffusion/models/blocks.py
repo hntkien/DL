@@ -171,40 +171,6 @@ class Downsample(nn.Sequential):
         super().__init__(
             conv2d(channel, channel, kernel_size=3, stride=2, padding=1)
         )
-
-# ---------------------------------------------------------------------------
-# Time (sinusoidal) embedding
-# ---------------------------------------------------------------------------
-class TimeEmbedding(nn.Module):
-    """Sinusoidal positional embedding for the diffusion timestep.
-
-    Maps a scalar timestep t ∈ {1, …, T} to a dense vector of dimension
-    ``dim`` using sine and cosine functions at different frequencies,
-    following Vaswani et al. (2017) and Ho et al. (2020).
-
-    Args:
-        dim: Output embedding dimension (must be even).
-    """
-    def __init__(self, dim: int) -> None:
-        super().__init__() 
-        self.dim = dim 
-        inv_freq = torch.exp(
-            torch.arange(0, dim, 2, dtype=torch.float32) * (-math.log(10000.0) / dim)
-        )
-        self.register_buffer("inv_freq", inv_freq)
-
-    def forward(self, t: torch.Tensor) -> torch.Tensor:
-        """Embed a batch of integer timesteps. 
-
-        Args:
-            t (torch.Tensor): Integer timestep tensor of shape (B,).
-
-        Returns:
-            torch.Tensor: Float32 emebdding tensor of shape (B, dim). 
-        """
-        sinusoid = torch.outer(t.float(), self.inv_freq)  # (B, dim/2)
-        emb = torch.cat([sinusoid.sin(), sinusoid.cos()], dim=-1)  # (B, dim)
-        return emb
     
 # ---------------------------------------------------------------------------
 # Residual block

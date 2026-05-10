@@ -4,60 +4,11 @@ from blocks import (
     Downsample, 
     ResBlockWithAttention, 
     Swish, 
-    TimeEmbedding, 
     Upsample, 
     conv2d, 
     linear
 )
-
-# ---------------------------------------------------------------------------
-# Condition projection
-# ---------------------------------------------------------------------------
-class ConditionEmbedding(nn.Module):
-    """Projects a multi-hot label vector into the time-embedding space. 
-
-    A two-layer MLP (with Swish activation) maps the binary label vecor to a dense vector of dimension ``time_dim``, matching the shape of the time embedding so the two can be element-wise added. 
-
-    For classifier-free guidance, the null condition is represented by the all-zeros vector; when ``condition`` is all zeros, this module outputs a near-zero vector (because the first linear layer has zero-initialised bias), leaving the time signal intact. 
-
-    Args:
-        num_classes (int): Number of object classes (24 for iCLEVR). 
-        time_dim (int): Output dimension; must match the dimension of the time embedding.
-    """
-    def __init__(
-            self, 
-            num_classes: int, 
-            time_dim: int, 
-            mode: str = "fan_avg",
-            distribution: str = "uniform"
-    ) -> None:
-        super().__init__()
-        self.proj = nn.Sequential(
-            linear(
-                in_channels=num_classes, 
-                out_channels=time_dim, 
-                mode=mode, 
-                distribution=distribution
-            ), 
-            Swish(), 
-            linear(
-                in_channels=time_dim, 
-                out_channels=time_dim, 
-                mode=mode, 
-                distribution=distribution
-            )
-        )
-    
-    def forward(self, condition: torch.Tensor) -> torch.Tensor:
-        """Project a multi-hot condition vector to the embedding space. 
-
-        Args:
-            condition (torch.Tensor): Float32 multi-hot vector of shape (B, num_classes). Pass the zero vector for unconditional (CFG null) generation. 
-
-        Returns:
-            torch.Tensor: Float32 vector of shape (B, time_dim) representing the projected condition.
-        """
-        return self.proj(condition)
+from condition import TimeEmbedding, ConditionEmbedding
     
 # ---------------------------------------------------------------------------
 # U-Net
@@ -133,6 +84,9 @@ class UNet(nn.Module):
                 distribution=distribution 
             )
         
+        # Channel aliases for readability (default: 128, 256, 512)
+        C1, C2, C4 = channel, channel * 2, channel * 4
+        
         # ===== Encoder =====
         # Stage 0 - 64x64, 128 channels 
         self.init_conv = conv2d(
@@ -143,30 +97,30 @@ class UNet(nn.Module):
             mode=mode,
             distribution=distribution
         )
-        self.down_0a = _rb(128, 128) 
-        self.down_0b = _rb(128, 128)
-        self.down_01 = Downsample(128)  # 64 -> 32
+        self.down_0a = _rb(C1, C1) 
+        self.down_0b = _rb(C1, C1)
+        self.down_01 = Downsample(C1)  # 64 -> 32
 
         # Stage 1 - 32x32, 256 channels
-        self.down_1a = _rb(128, 256)
-        self.down_1b = _rb(256, 256)
-        self.down_12 = Downsample(256)  # 32 -> 16
+        self.down_1a = _rb(C1, C2)
+        self.down_1b = _rb(C2, C2)
+        self.down_12 = Downsample(C2)  # 32 -> 16
 
         # Stage 2 - 16x16, 256 channels (+ attention) 
-        self.down_2a = _rb(256, 256, attn=True)
-        self.down_2b = _rb(256, 256, attn=True)
-        self.down_23 = Downsample(256)  # 16 -> 8
+        self.down_2a = _rb(C2, C2, attn=True)
+        self.down_2b = _rb(C2, C2, attn=True)
+        self.down_23 = Downsample(C2)  # 16 -> 8
 
         # Stage 3 - 8x8, 512 channels (+ attention)
-        self.down_3a = _rb(256, 512, attn=True)
-        self.down_3b = _rb(512, 512, attn=True)
+        self.down_3a = _rb(C2, C4, attn=True)
+        self.down_3b = _rb(C4, C4, attn=True)
 
         # ===== Bottleneck =====
-        self.mid_a = _rb(512, 512, attn=True)
-        self.mid_b = _rb(512, 512)
+        self.mid_a = _rb(C4, C4, attn=True)
+        self.mid_b = _rb(C4, C4)
 
         # ===== Decoder (mirror of encoder; input channels = current + skip) ======
-        C1, C2, C4 = channel, channel * 2, channel * 4   # 128, 256, 512
+        # C1, C2, C4 = channel, channel * 2, channel * 4   # 128, 256, 512
 
         # Stage 3 — 8×8  (+ attention)
         # x(C4=512) || f3b(C4=512) → C4   x(C4) || f3a(C4=512) → C4
