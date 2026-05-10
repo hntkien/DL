@@ -3,6 +3,8 @@ import json
 from typing import List, Dict
 from pathlib import Path 
 import torch 
+import torchvision.utils as vutils
+from PIL import Image
 
 
 #---------------------------------------------------------------------------
@@ -59,7 +61,7 @@ def save_checkpoint(
     Persists the raw model weights, EMA shadow weights, optimizer state,
     LR scheduler state, and early-stopping state so that training can be
     resumed exactly from this point.
- 
+
     Args:
         path (Path): Destination file path (e.g. ``ckpts/ckpt_epoch0010.pt``).
         epoch (int): Current epoch (1-indexed).
@@ -124,3 +126,58 @@ def load_checkpoint(
 
     print(f"  [ckpt] Resumed from {path} (epoch {ckpt['epoch']})")
     return ckpt["epoch"], ckpt["global_step"], ckpt["loss"]
+
+# ---------------------------------------------------------------------------
+# Image utilities
+# ---------------------------------------------------------------------------
+def tensor_to_pil(x: torch.Tensor) -> Image.Image:
+    """Convert a single CHW tensor in ``[-1, 1]`` to a PIL RGB image.
+
+    Args:
+        x (torch.Tensor): Float tensor of shape ``(3, H, W)`` in ``[-1, 1]``.
+
+    Returns:
+        Image.Image: Corresponding PIL RGB image in ``[0, 255]``.
+    """
+    x = x.clamp(-1.0, 1.0)
+    x = (x + 1.0) / 2.0              # → [0, 1]
+    x = (x * 255.0).byte()           # → [0, 255]
+    return Image.fromarray(x.permute(1, 2, 0).cpu().numpy(), mode="RGB")
+
+def save_image_grid(
+        images: torch.Tensor,
+        path: Path,
+        nrow: int = 8,
+) -> None:
+    """Save a batch of ``[-1, 1]`` tensors as a PNG image grid.
+
+    Args:
+        images (torch.Tensor): Float tensor of shape ``(N, 3, H, W)`` in ``[-1, 1]``.
+        path (Path): Destination PNG file path.
+        nrow (int): Number of images per row in the grid. Defaults to 8.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    grid = vutils.make_grid(
+        images.clamp(-1.0, 1.0),
+        nrow=nrow,
+        normalize=True,    # maps [-1, 1] → [0, 1] for vutils
+        value_range=(-1, 1),
+    )
+    vutils.save_image(grid, path)
+    print(f"  [save] Grid → {path}")
+
+def save_individual_images(images: torch.Tensor, out_dir: Path) -> None:
+    """Save each image in a batch as a numbered PNG file.
+
+    Images are saved as ``{out_dir}/0.png``, ``{out_dir}/1.png``, … matching
+    the index order in the corresponding JSON test file.
+
+    Args:
+        images (torch.Tensor): Float tensor of shape ``(N, 3, H, W)`` in ``[-1, 1]``.
+        out_dir (Path): Directory to save images into.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for i, img in enumerate(images):
+        pil = tensor_to_pil(img)
+        pil.save(out_dir / f"{i}.png")
+    print(f"  [save] {len(images)} individual PNGs → {out_dir}/")
