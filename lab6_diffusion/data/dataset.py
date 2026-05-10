@@ -23,7 +23,7 @@ from torch.utils.data import DataLoader, Dataset
 from torchvision.transforms import v2 as T 
 from utils import load_label_map, encode_labels
 
-def build_transform(image_size: int = 64) -> T.Compose:
+def build_transform(image_size: int = 64, augment: bool = False) -> T.Compose:
     """Build the standard image transform pipeline.
 
     Resizes to image_size x image_size, converts to tensor, and normalises
@@ -31,18 +31,28 @@ def build_transform(image_size: int = 64) -> T.Compose:
 
     Args:
         image_size: Target spatial resolution (default 64).
+        augment: If True, apply random horizontal flip for data augmentation (default False).
 
     Returns:
         A composed torchvision transform.
     """
-    return T.Compose([
-        T.Resize((image_size, image_size)),
+    steps = [
+        T.Resize(
+            (image_size, image_size), 
+            interpolation=T.InterpolationMode.BICUBIC,
+            antialias=True,
+        ),
+    ]
+    if augment:
+        steps.append(T.RandomHorizontalFlip())
+    steps.extend([
         T.ToImage(),
         T.ToDtype(torch.float32, scale=True),            # [0, 1]
         T.Normalize(
             mean=[0.5, 0.5, 0.5], 
             std=[0.5, 0.5, 0.5]),   # [-1, 1]
     ])
+    return T.Compose(steps)
 
 # ---------------------------------------------------------------------------
 # Training dataset  (image + condition)
@@ -68,11 +78,12 @@ class ICLEVRTrainDataset(Dataset):
             objects_json: str | os.PathLike,
             image_size: int = 64,
             drop_prob: float = 0.1, 
+            augment: bool = True,
     ) -> None:
         super().__init__()
         self.image_dir = Path(image_dir)
         self.label_map = load_label_map(objects_json)
-        self.transform = build_transform(image_size)
+        self.transform = build_transform(image_size, augment=augment)
         self.drop_prob = drop_prob 
         self.num_classes = len(self.label_map)
 
