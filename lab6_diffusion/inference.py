@@ -433,12 +433,12 @@ def main() -> None:
     ddpm = load_ddpm_from_checkpoint(args.checkpoint, cfg, device)
 
     # ── Load evaluator ───────────────────────────────────────────────────── #
-    evaluator = load_evaluator(args.eval_ckpt, device)
+    evaluator = load_evaluator(args.eval_ckpt)
 
     # ── Run both test splits ──────────────────────────────────────────────── #
     results: dict[str, float] = {}
 
-    for split_name, json_key in ["test_json", "new_test_json"]:
+    for split_name, json_key in [("test", "test_json"), ("new_test", "new_test_json")]:
         json_path = path_cfg[json_key]
         acc = run_split(
             split_name=split_name,
