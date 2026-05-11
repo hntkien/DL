@@ -71,7 +71,7 @@ sampling:
   sampler:              "ddim" # "ddpm" | "ddim"
   ddim_steps:           50 
   ddim_eta:             0.0    # 0.0 = deterministic DDIM, 1.0 ≈ DDPM
-  guidance_scale:       2.0    # CFG weight w; 1.0 = no guidance
+  guidance_scale:       5.0    # CFG weight w; 1.0 = no guidance
   batch_size:           32     # must cover full test set (32 samples)
   save_grid:            true   # save image grid alongside individual images
   grid_nrow:            8      # images per row in the saved grid

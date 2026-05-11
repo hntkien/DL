@@ -74,7 +74,7 @@ class DDPM(nn.Module):
             ddim_steps: int = 50,
             ddim_eta: float = 0.0,
             return_immediates: bool = False,
-            intermedate_every: int = 100,
+            intermediate_every: int = 100,
     ) -> torch.Tensor | Tuple[torch.Tensor, List[torch.Tensor]]:
         """Generate images with classifier-free guidance.
 
@@ -104,7 +104,7 @@ class DDPM(nn.Module):
                 eta=ddim_eta,
                 guidance_scale=guidance_scale,
                 return_intermediates=return_immediates,
-                intermediate_every=intermedate_every,
+                intermediate_every=intermediate_every,
             )
         elif sampler == "ddpm":
             return self._sample_ddpm(
@@ -112,7 +112,7 @@ class DDPM(nn.Module):
                 image_size=image_size,
                 guidance_scale=guidance_scale,
                 return_immediates=return_immediates,
-                intermedate_every=intermedate_every,
+                intermediate_every=intermediate_every,
             )
         else:
             raise ValueError(f"Unknown sampler '{sampler}'. Use 'ddpm' or 'ddim'.")
