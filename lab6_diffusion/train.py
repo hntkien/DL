@@ -7,6 +7,7 @@ Usage:
 """
 import argparse
 import os 
+import math
 from pathlib import Path 
 
 import torch 
@@ -46,17 +47,34 @@ def parse_args():
 # ---------------------------------------------------------------------------
 # LR schedule: linear warmup then constant
 # ---------------------------------------------------------------------------
-def build_lr_scheduler(optimizer, warmup_steps: int):
-    """Linear warmup for ``warmup_steps`` gradient steps, then constant LR.
+def build_lr_scheduler(
+        optimizer: torch.optim.Optimizer,
+        warmup_steps: int,
+        total_steps: int,
+        min_lr_ratio: float = 0.0,
+) -> LambdaLR:
+    """Build a linear-warmup + cosine-decay LR schedule.
+
+    Ramps the learning rate linearly from 0 to the base LR over ``warmup_steps``
+    steps, then cosine-decays it to ``min_lr_ratio × base_lr`` over the remaining ``total_steps - warmup_steps`` steps. After ``total_steps`` the multiplier stays at ``min_lr_ratio`` (relevant if early stopping does not trigger).
 
     Args:
-        optimizer (_type_): The optimizer to wrap. 
-        warmup_steps (int): Number of gradient steps for linear warmup. 
+        optimizer (torch.optim.Optimizer): Optimizer to wrap.
+        warmup_steps (int): Linear-warmup duration in gradient steps.
+        total_steps (int): Total expected gradient steps for the full run.
+        min_lr_ratio (float): Final LR as a fraction of base LR. Defaults to 0.0.
+
+    Returns:
+        LambdaLR: The configured scheduler.
     """
     def lr_lambda(step: int) -> float:
         if step < warmup_steps:
             return step / max(1, warmup_steps)
-        return 1.0
+        progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
+        progress = min(progress, 1.0)
+        cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+        return min_lr_ratio + (1.0 - min_lr_ratio) * cosine
+
     return LambdaLR(optimizer, lr_lambda)
 
 # ---------------------------------------------------------------------------
@@ -100,16 +118,35 @@ def train(cfg: dict, resume_path: str = "") -> None:
     # ── Model, EMA, DDPM ────────────────────────────────────────────────── #
     model    = UNet(**cfg["model"]).to(device)
     schedule = NoiseSchedule(**cfg["schedule"]).to(device)
-    ddpm     = DDPM(model, schedule).to(device)
+    min_snr_gamma = training_cfg.get("min_snr_gamma", None)
+    ddpm     = DDPM(model, schedule, min_snr_gamma=min_snr_gamma).to(device)
     ema      = EMA(
         model,
         decay=training_cfg["ema_decay"],
         warmup_steps=training_cfg.get("ema_warmup_steps", 0),
     )
+    if min_snr_gamma:
+        print(f"  [loss] Min-SNR-γ weighting enabled (γ={min_snr_gamma}).")
 
     # ── Optimizer & LR schedule ─────────────────────────────────────────── #
-    optimizer = AdamW(model.parameters(), lr=training_cfg["lr"])
-    scheduler = build_lr_scheduler(optimizer, training_cfg["lr_warmup_steps"])
+    optimizer = AdamW(
+        params=model.parameters(), 
+        lr=training_cfg["lr"], 
+        weight_decay=training_cfg["weight_decay"]
+    )
+    total_steps = training_cfg["num_epochs"] * len(loader)
+    min_lr_ratio = float(training_cfg.get("lr_min", 0.0)) / training_cfg["lr"]
+    scheduler = build_lr_scheduler(
+        optimizer,
+        warmup_steps=training_cfg["lr_warmup_steps"],
+        total_steps=total_steps,
+        min_lr_ratio=min_lr_ratio,
+    )
+    print(
+        f"  [lr] warmup={training_cfg['lr_warmup_steps']} steps, "
+        f"cosine decay over {total_steps} total steps "
+        f"(min_lr_ratio={min_lr_ratio:.2e})."
+    )
 
     # ── Mixed precision scaler ──────────────────────────────────────────── #
     use_amp = training_cfg["mixed_precision"] and device.type == "cuda"
@@ -125,7 +162,6 @@ def train(cfg: dict, resume_path: str = "") -> None:
     # ── Resume ──────────────────────────────────────────────────────────── #
     start_epoch = 0
     global_step = 0
-
     resume_path = resume_path or training_cfg.get("resume_ckpt", "")
     if resume_path:
         start_epoch, global_step, _ = load_checkpoint(
@@ -161,12 +197,12 @@ def train(cfg: dict, resume_path: str = "") -> None:
             epoch_loss  += loss.item()
             global_step += 1
 
-            if global_step % training_cfg["log_every"] == 0:
-                lr = scheduler.get_last_lr()[0]
-                print(
-                    f"  epoch {epoch:04d} | step {global_step:07d} "
-                    f"| loss {loss.item():.4f} | lr {lr:.2e}"
-                )
+            # if global_step % training_cfg["log_every"] == 0:
+            #     lr = scheduler.get_last_lr()[0]
+            #     print(
+            #         f"  epoch {epoch:04d} | step {global_step:07d} "
+            #         f"| loss {loss.item():.4f} | lr {lr:.2e}"
+            #     )
 
         # ── End-of-epoch bookkeeping ─────────────────────────────────────── #
         epoch_loss /= len(loader)

@@ -1,42 +1,51 @@
-from typing import Optional, List, Tuple 
-import torch 
+from typing import Optional, List, Tuple, Literal
+import torch
 import torch.nn as nn
-import torch.nn.functional as F 
+import torch.nn.functional as F
 
 from diffusion.noise_schedule import NoiseSchedule
+from diffusion.sampler import ddim_sample
 from models.unet import UNet
 
+
+SamplerKind = Literal["ddpm", "ddim"]
+
 class DDPM(nn.Module):
-    """Denoising Diffusion Probabilistic Models (DDPM) implementation.
+    """Denoising Diffusion Probabilistic Models (DDPM) wrapper.
 
-    Wraps a noise-prediction U-Net and a pre-computed noise schedule. Conditioning is supplied as a multi-hot label vector that matches the channel layout in `objects.json`. 
+    Wraps a noise-prediction U-Net and a pre-computed noise schedule. Conditioning is supplied as a multi-hot label vector that matches the channel layout in ``objects.json``. Supports DDPM and DDIM samplers and optional Min-SNR-γ loss weighting (Hang et al. 2023, https://arxiv.org/abs/2303.09556).
 
-    Args: 
-        model (nn.Module): The noise-prediction model, typically a U-Net.
-        schedule (NoiseSchedule): The noise schedule defining the forward diffusion process.
+    Args:
+        model (UNet): The noise-prediction U-Net.
+        schedule (NoiseSchedule): The pre-computed noise schedule.
+        min_snr_gamma (float | None): If not None and > 0, weight the per-sample ε-prediction loss by ``min(γ, SNR(t)) / SNR(t)``. ``None`` or 0 disables weighting (uniform per-t loss). Defaults to None.
     """
     def __init__(
             self, 
             model: UNet,
-            schedule: NoiseSchedule
+            schedule: NoiseSchedule, 
+            min_snr_gamma: Optional[float] = None
     ) -> None: 
         super().__init__() 
         self.model = model 
         self.schedule = schedule
         self.num_timesteps = schedule.num_timesteps
         self.num_classes = model.num_classes 
+        self.min_snr_gamma = min_snr_gamma
 
     def training_loss(self, x0: torch.Tensor, condition: torch.Tensor) -> torch.Tensor:
-        """Compute the simple noise-prediction MSE loss for one batch. 
+        """Compute the ε-prediction loss for one batch, optionally Min-SNR weighted.
 
-        CFG-style condition dropping is perfomed upstream in the dataset (`drop_prob`) so `condition` may already contain zero rows here. 
+        With ``min_snr_gamma`` set (recommended γ=5), each sample's MSE is multiplied by ``min(γ, SNR(t)) / SNR(t)`` where ``SNR(t) = ᾱ_t / (1 - ᾱ_t)``. This downweights easy small-t samples that otherwise dominate the average loss, focusing gradients on the harder high-t regime where conditioning matters most.
+
+        CFG-style condition dropping is performed upstream in the dataset (``drop_prob``); ``condition`` may already contain zero rows here.
 
         Args:
             x0 (torch.Tensor): Clean image batch of shape (B, C, H, W).
-            condition (torch.Tensor): Multi-hot class vector of shape (B, num_classes) for classifier-free guidance. May contain zero rows for dropped conditions.
+            condition (torch.Tensor): Multi-hot class vector of shape (B, num_classes). May contain all-zero rows (CFG null token).
 
         Returns:
-            torch.Tensor: Scalar loss tensor (mean MSE over all elements and batch).
+            torch.Tensor: Scalar loss tensor.
         """
         B = x0.shape[0] 
         t = torch.randint(0, self.num_timesteps, (B,), device=x0.device)  # Random timesteps for each sample in the batch
@@ -44,10 +53,72 @@ class DDPM(nn.Module):
         x_t = self.schedule.q_sample(x0, t, noise=noise)  # Diffuse the clean image to get the noisy image at timestep t
         noise_pred = self.model(x_t, t, condition) 
 
-        return F.mse_loss(noise_pred, noise)  # MSE loss between the predicted noise and the true noise
+        # Per-sample MSE averaged over (C, H, W); shape (B,)
+        mse = (noise_pred - noise).pow(2).mean(dim=[1, 2, 3])
+
+        if self.min_snr_gamma is not None and self.min_snr_gamma > 0:
+            alphas_cumprod = self.schedule.alphas_cumprod[t]              # (B,)
+            snr = alphas_cumprod / (1.0 - alphas_cumprod).clamp(min=1e-8)  # (B,)
+            weight = torch.clamp(snr, max=self.min_snr_gamma) / snr        # (B,)
+            return (weight * mse).mean()
+        
+        return mse.mean()
+    
+    @torch.no_grad()
+    def sample(
+            self,
+            condition: torch.Tensor,
+            image_size: int = 64,
+            guidance_scale: float = 2.0,
+            sampler: SamplerKind = "ddpm",
+            ddim_steps: int = 50,
+            ddim_eta: float = 0.0,
+            return_immediates: bool = False,
+            intermedate_every: int = 100,
+    ) -> torch.Tensor | Tuple[torch.Tensor, List[torch.Tensor]]:
+        """Generate images with classifier-free guidance.
+
+        Dispatches to the DDPM ancestral sampler or the DDIM sampler.
+
+        Args:
+            condition (torch.Tensor): Multi-hot label tensor of shape (B, num_classes).
+            image_size (int): Spatial size of the generated images. Defaults to 64.
+            guidance_scale (float): CFG weight ``w``. ``1.0`` disables guidance. Defaults to 2.0.
+            sampler (str): ``"ddpm"`` for ancestral sampling (T steps) or ``"ddim"`` for DDIM (``ddim_steps`` steps). Defaults to ``"ddpm"``.
+            ddim_steps (int): Number of DDIM steps. Ignored when ``sampler="ddpm"``. Defaults to 50.
+            ddim_eta (float): DDIM stochasticity. 0.0 = deterministic. Defaults to 0.0.
+            return_immediates (bool): If True, also return intermediate xₜ samples. Defaults to False.
+            intermedate_every (int): Interval between recorded intermediates (in the original timestep index for DDPM, in DDIM-step index for DDIM). Defaults to 100.
+
+        Returns:
+            torch.Tensor | Tuple[torch.Tensor, List[torch.Tensor]]:
+                Generated images, or (images, intermediates) if requested.
+        """
+        if sampler == "ddim":
+            return ddim_sample(
+                model=self.model,
+                schedule=self.schedule,
+                condition=condition,
+                image_size=image_size,
+                num_steps=ddim_steps,
+                eta=ddim_eta,
+                guidance_scale=guidance_scale,
+                return_intermediates=return_immediates,
+                intermediate_every=max(1, ddim_steps // max(1, intermedate_every // (self.num_timesteps // ddim_steps))),
+            )
+        elif sampler == "ddpm":
+            return self._sample_ddpm(
+                condition=condition,
+                image_size=image_size,
+                guidance_scale=guidance_scale,
+                return_immediates=return_immediates,
+                intermedate_every=intermedate_every,
+            )
+        else:
+            raise ValueError(f"Unknown sampler '{sampler}'. Use 'ddpm' or 'ddim'.")
     
     @torch.no_grad() 
-    def sample(
+    def _sample_ddpm(
         self,
         condition: torch.Tensor, 
         image_size: int = 64, 
@@ -83,7 +154,7 @@ class DDPM(nn.Module):
         # Start from pure Gaussian noise 
         x = torch.randn(B, 3, image_size, image_size, device=device) 
         null_cond = torch.zeros_like(condition) 
-        intermediates = [] 
+        intermediates: List[torch.Tensor] = []
 
         # Reverse process 
         for step in reversed(range(self.num_timesteps)):
@@ -138,7 +209,8 @@ class DDPM(nn.Module):
         """
         model = UNet(**config["model"])
         schedule = NoiseSchedule(**config["schedule"])
-        return cls(model, schedule)
+        min_snr_gamma = config.get("training", {}).get("min_snr_gamma", None)
+        return cls(model, schedule, min_snr_gamma=min_snr_gamma)
     
 # ---------------------------------------------------------------------------
 # Quick smoke test

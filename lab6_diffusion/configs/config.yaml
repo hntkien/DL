@@ -29,18 +29,18 @@ model:
   in_channels:      3
   channel:         128       # base width; stages use channel×1, ×2, ×4
   num_classes:     24
-  attn_heads:      1
-  use_affine_time: false     # additive conditioning; set true for AdaGN
+  attn_heads:      4
+  use_affine_time: true      # additive conditioning; set true for AdaGN
   dropout:         0.1
   num_groups:      32        # GroupNorm groups; must divide channel, ×2, ×4
   mode:            "fan_avg" # "fan_in"/"fan_out"/"fan_avg"
-  distribution:    "uniform" # "uniform"/"normal" 
+  distribution:    "normal"  # "uniform"/"normal" 
 
 # ---------------------------------------------------------------------------
 # Noise schedule
 # ---------------------------------------------------------------------------
 schedule:
-  schedule:      "linear"   # "linear" | "cosine"
+  schedule:      "cosine"   # "linear" | "cosine"
   num_timesteps: 1000
   beta_start:    0.0001       # linear schedule only
   beta_end:      0.02       # linear schedule only
@@ -51,24 +51,30 @@ schedule:
 # ---------------------------------------------------------------------------
 training:
   batch_size:        64
-  num_epochs:        100
+  num_epochs:        500
   lr:                1e-4
+  lr_min:            1e-6    # minimum LR for scheduler; only used if lr_warmup_steps > 0
   lr_warmup_steps:   500     # linear warmup before constant LR
+  weight_decay:      1e-4    # AdamW weight decay; 0 to disable
   grad_clip:         1.0     # max gradient norm; 0 to disable
   ema_decay:         0.9999  # EMA of model weights for stable sampling
   mixed_precision:   true    # torch.autocast fp16
   log_every:         100     # steps between loss logs
   save_every:        5       # epochs between periodic checkpoint saves
   resume_ckpt:       ""      # path to checkpoint to resume from; "" = fresh start
+  min_snr_gamma:     5.0     # Min-SNR-γ weighting; null/0 disables
 
 # ---------------------------------------------------------------------------
 # Sampling / inference
 # ---------------------------------------------------------------------------
 sampling:
-  guidance_scale:       2.0   # CFG weight w; 1.0 = no guidance
-  batch_size:           32    # must cover full test set (32 samples)
-  save_grid:            true  # save image grid alongside individual images
-  grid_nrow:            8     # images per row in the saved grid
+  sampler:              "ddim" # "ddpm" | "ddim"
+  ddim_steps:           50 
+  ddim_eta:             0.0    # 0.0 = deterministic DDIM, 1.0 ≈ DDPM
+  guidance_scale:       2.0    # CFG weight w; 1.0 = no guidance
+  batch_size:           32     # must cover full test set (32 samples)
+  save_grid:            true   # save image grid alongside individual images
+  grid_nrow:            8      # images per row in the saved grid
 # ---------------------------------------------------------------------------
 # Early stopping
 # ---------------------------------------------------------------------------

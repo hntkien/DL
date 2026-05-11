@@ -83,8 +83,27 @@ def parse_args():
     parser.add_argument(
         "--guidance_scale", 
         type=float, 
-        default=1.0, 
-        help="Classifier-free guidance scale (default 1.0, i.e. no guidance)."
+        default=None, 
+        help="Classifier-free guidance scale; if omitted, uses cfg['sampling']['guidance_scale']."
+    )
+    parser.add_argument(
+        "--sampler", 
+        type=str, 
+        default=None, 
+        choices=[None, "ddpm", "ddim"],
+        help="Sampler kind; if omitted, uses cfg['sampling']['sampler'].",
+    )
+    parser.add_argument(
+        "--ddim_steps", 
+        type=int, 
+        default=None,
+        help="DDIM steps; if omitted, uses cfg['sampling']['ddim_steps'].",
+    )
+    parser.add_argument(
+        "--ddim_eta", 
+        type=float, 
+        default=None,
+        help="DDIM η; if omitted, uses cfg['sampling']['ddim_eta'].",
     )
     parser.add_argument(
         "--batch_size",
@@ -215,22 +234,25 @@ def generate_images(
         image_size: int,
         guidance_scale: float,
         device: torch.device,
+        sampler: str = "ddpm",
+        ddim_steps: int = 50, 
+        ddim_eta: float = 0.0,
 ) -> torch.Tensor:
-    """Run DDPM sampling in mini-batches and return all generated images.
-
-    Splits the condition tensor into chunks of ``batch_size`` to avoid OOM
-    on large test sets.
+    """Run sampling in mini-batches and concatenate the results.
 
     Args:
-        ddpm (DDPM): DDPM model (eval mode, EMA weights).
-        conditions (torch.Tensor): Float multi-hot tensor of shape ``(N, num_classes)``.
-        batch_size (int): Number of images to sample per forward pass.
-        image_size (int): Spatial size of generated images.
-        guidance_scale (float): CFG guidance scale ``w``.
-        device (torch.device): Device to run sampling on.
+        ddpm (DDPM): DDPM model (eval, EMA weights).
+        conditions (torch.Tensor): Multi-hot labels of shape (N, num_classes).
+        batch_size (int): Sampling batch size.
+        image_size (int): Spatial size.
+        guidance_scale (float): CFG weight.
+        device (torch.device): Target device.
+        sampler (str): ``"ddpm"`` or ``"ddim"``. Defaults to ``"ddpm"``.
+        ddim_steps (int): DDIM step count. Defaults to 50.
+        ddim_eta (float): DDIM η. Defaults to 0.0.
 
     Returns:
-        torch.Tensor: Float tensor of shape ``(N, 3, H, W)`` in ``[-1, 1]``.
+        torch.Tensor: Float tensor of shape (N, 3, H, W) in [-1, 1].
     """
     all_images: List[torch.Tensor] = []
     N = conditions.shape[0]
@@ -241,6 +263,9 @@ def generate_images(
             condition=cond_batch,
             image_size=image_size,
             guidance_scale=guidance_scale,
+            sampler=sampler,
+            ddim_steps=ddim_steps,
+            ddim_eta=ddim_eta,
         )
         all_images.append(imgs.cpu())
         print(f"    Generated {min(start + batch_size, N)}/{N} images …")
@@ -255,29 +280,39 @@ def generate_denoising_process(
         guidance_scale: float,
         num_frames: int,
         device: torch.device,
+        sampler: str = "ddpm",
+        ddim_steps: int = 50,
+        ddim_eta: float = 0.0,
 ) -> Tuple[torch.Tensor, List[torch.Tensor]]:
     """Sample one image and return its intermediate denoising frames.
 
     Args:
-        ddpm (DDPM): DDPM model (eval mode, EMA weights).
-        condition (torch.Tensor): Multi-hot condition of shape ``(1, num_classes)``.
-        image_size (int): Spatial size of the generated image.
-        guidance_scale (float): CFG guidance scale ``w``.
-        num_frames (int): Approximate number of intermediate frames to capture.
-        device (torch.device): Device to run sampling on.
+        ddpm (DDPM): DDPM model.
+        condition (torch.Tensor): Multi-hot condition of shape (1, num_classes).
+        image_size (int): Spatial size.
+        guidance_scale (float): CFG weight.
+        num_frames (int): Approximate number of intermediate frames.
+        device (torch.device): Target device.
+        sampler (str): ``"ddpm"`` or ``"ddim"``. Defaults to ``"ddpm"``.
+        ddim_steps (int): DDIM step count. Defaults to 50.
+        ddim_eta (float): DDIM η. Defaults to 0.0.
 
     Returns:
         Tuple[torch.Tensor, List[torch.Tensor]]:
-            - final image of shape ``(1, 3, H, W)``
-            - list of ``num_frames`` intermediate tensors, each ``(1, 3, H, W)``, ordered from most noisy (t≈T) to clean (t=0).
+            Final image and list of intermediate (1, 3, H, W) tensors.
     """
-    T     = ddpm.num_timesteps
-    every = max(1, T // num_frames)
+    if sampler == "ddim":
+        every = max(1, ddim_steps // num_frames)
+    else:
+        every = max(1, ddpm.num_timesteps // num_frames)
 
     final, intermediates = ddpm.sample(
         condition=condition.to(device),
         image_size=image_size,
         guidance_scale=guidance_scale,
+        sampler=sampler,
+        ddim_steps=ddim_steps,
+        ddim_eta=ddim_eta,
         return_immediates=True,
         intermedate_every=every,
     )
@@ -298,6 +333,9 @@ def run_split(
         guidance_scale: float,
         grid_nrow: int,
         device: torch.device,
+        sampler: str = "ddpm",
+        ddim_steps: int = 50,
+        ddim_eta: float = 0.0,
 ) -> float:
     """Generate, save, and evaluate images for one test split.
 
@@ -313,6 +351,9 @@ def run_split(
         guidance_scale (float): CFG guidance scale.
         grid_nrow (int): Images per row in the saved grid.
         device (torch.device): Target device.
+        sampler (str): ``"ddpm"`` or ``"ddim"``. Defaults to ``"ddpm"``.
+        ddim_steps (int): DDIM step count. Defaults to 50.
+        ddim_eta (float): DDIM η. Defaults to 0.0.
 
     Returns:
         float: Evaluator accuracy in ``[0, 1]``, or ``-1.0`` if skipped.
@@ -331,7 +372,8 @@ def run_split(
     # ── Generate ─────────────────────────────────────────────────────────── #
     print("  Sampling …")
     images = generate_images(
-        ddpm, conditions, batch_size, image_size, guidance_scale, device
+        ddpm, conditions, batch_size, image_size, guidance_scale, device,
+        sampler=sampler, ddim_steps=ddim_steps, ddim_eta=ddim_eta,
     )  # (N, 3, H, W) in [-1, 1]
 
     # ── Save individual PNGs ─────────────────────────────────────────────── #
@@ -365,6 +407,9 @@ def run_denoising_viz(
         guidance_scale: float,
         num_frames: int,
         device: torch.device,
+        sampler: str = "ddpm",
+        ddim_steps: int = 50,
+        ddim_eta: float = 0.0,
 ) -> None:
     """Generate and save the denoising process strip for a fixed label set.
 
@@ -382,6 +427,9 @@ def run_denoising_viz(
         guidance_scale (float): CFG guidance scale.
         num_frames (int): Number of intermediate frames to show in the strip.
         device (torch.device): Target device.
+        sampler (str): ``"ddpm"`` or ``"ddim"``. Defaults to ``"ddpm"``.
+        ddim_steps (int): DDIM step count. Defaults to 50.
+        ddim_eta (float): DDIM η. Defaults to 0.0.
     """
     from utils.utils import load_label_map, encode_labels
 
@@ -394,7 +442,8 @@ def run_denoising_viz(
     cond = encode_labels(label_names, label_map, num_classes).unsqueeze(0)  # (1, C)
 
     _, intermediates = generate_denoising_process(
-        ddpm, cond, image_size, guidance_scale, num_frames, device
+        ddpm, cond, image_size, guidance_scale, num_frames, device,
+        sampler=sampler, ddim_steps=ddim_steps, ddim_eta=ddim_eta,
     )
 
     # intermediates: list of (1, 3, H, W), noisy → clean
@@ -414,18 +463,37 @@ def main() -> None:
     print(f"Device: {device}")
 
     # ── Config aliases ───────────────────────────────────────────────────── #
-    path_cfg  = cfg["paths"]
+    path_cfg     = cfg["paths"]
     dataset_cfg  = cfg["dataset"]
-    sampling_cfg  = cfg["sampling"]
+    sampling_cfg = cfg["sampling"]
 
-    output_dir     = Path(args.output_dir or path_cfg["output_dir"])
-    guidance_scale = args.guidance_scale if args.guidance_scale > 0 else sampling_cfg["guidance_scale"]
-    batch_size     = args.batch_size if args.batch_size > 0 else sampling_cfg["batch_size"]
-    image_size     = dataset_cfg["image_size"]
-    grid_nrow      = sampling_cfg.get("grid_nrow", 8)
-    objects_json   = path_cfg["objects_json"]
+    output_dir = Path(args.output_dir or path_cfg["output_dir"])
+    guidance_scale = (
+        args.guidance_scale
+        if args.guidance_scale is not None
+        else sampling_cfg["guidance_scale"]
+    )
+    sampler = args.sampler or sampling_cfg.get("sampler", "ddpm")
+    ddim_steps = (
+        args.ddim_steps 
+        if args.ddim_steps is not None 
+        else sampling_cfg.get("ddim_steps", 50)
+    )
+    ddim_eta = (
+        args.ddim_eta 
+        if args.ddim_eta is not None 
+        else sampling_cfg.get("ddim_eta", 0.0)
+    )
+    batch_size = args.batch_size if args.batch_size > 0 else sampling_cfg["batch_size"]
+    image_size = dataset_cfg["image_size"]
+    grid_nrow = sampling_cfg.get("grid_nrow", 8)
+    objects_json = path_cfg["objects_json"]
 
     print(f"Output dir    : {output_dir}")
+    print(
+        f"Sampler       : {sampler}"
+        + (f" (steps={ddim_steps}, η={ddim_eta})" if sampler == "ddim" else "")
+    )
     print(f"Guidance scale: {guidance_scale}")
     print(f"Batch size    : {batch_size}")
 
@@ -439,10 +507,9 @@ def main() -> None:
     results: dict[str, float] = {}
 
     for split_name, json_key in [("test", "test_json"), ("new_test", "new_test_json")]:
-        json_path = path_cfg[json_key]
         acc = run_split(
             split_name=split_name,
-            test_json=json_path,
+            test_json=path_cfg[json_key],
             objects_json=objects_json,
             ddpm=ddpm,
             evaluator=evaluator,
@@ -452,6 +519,9 @@ def main() -> None:
             guidance_scale=guidance_scale,
             grid_nrow=grid_nrow,
             device=device,
+            sampler=sampler,
+            ddim_steps=ddim_steps,
+            ddim_eta=ddim_eta,
         )
         results[split_name] = acc
 
@@ -475,6 +545,9 @@ def main() -> None:
         guidance_scale=guidance_scale,
         num_frames=args.denoise_steps,
         device=device,
+        sampler=sampler,
+        ddim_steps=ddim_steps,
+        ddim_eta=ddim_eta,
     )
 
     print("\nInference complete.")
