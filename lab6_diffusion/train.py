@@ -127,6 +127,7 @@ def train(cfg: dict, resume_path: str = "") -> None:
     )
     if min_snr_gamma:
         print(f"  [loss] Min-SNR-γ weighting enabled (γ={min_snr_gamma}).")
+        print(f"  [check] ddpm.min_snr_gamma = {ddpm.min_snr_gamma}")
 
     # ── Optimizer & LR schedule ─────────────────────────────────────────── #
     optimizer = AdamW(
@@ -206,7 +207,7 @@ def train(cfg: dict, resume_path: str = "") -> None:
 
         # ── End-of-epoch bookkeeping ─────────────────────────────────────── #
         epoch_loss /= len(loader)
-        print(f"Epoch {epoch:04d} complete — avg loss: {epoch_loss:.4f}")
+        print(f"Epoch {epoch:04d} complete — avg loss: {epoch_loss:.5f}")
 
         should_stop = early_stop.step(epoch, epoch_loss)
 
@@ -217,7 +218,7 @@ def train(cfg: dict, resume_path: str = "") -> None:
                 epoch, ddpm, ema, optimizer, scheduler, early_stop,
                 epoch_loss, global_step,
             )
-            print(f"  [best] New best loss: {early_stop.best_loss:.4f}")
+            print(f"  [best] New best loss: {early_stop.best_loss:.5f}")
 
         # Periodic checkpoint every ``save_every`` epochs.
         if epoch % training_cfg["save_every"] == 0:
@@ -231,7 +232,7 @@ def train(cfg: dict, resume_path: str = "") -> None:
             print(
                 f"Early stopping triggered at epoch {epoch} "
                 f"(no improvement for {early_stopping_cfg['patience']} epochs). "
-                f"Best loss: {early_stop.best_loss:.4f}"
+                f"Best loss: {early_stop.best_loss:.5f}"
             )
             break
 

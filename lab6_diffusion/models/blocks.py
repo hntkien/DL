@@ -360,7 +360,7 @@ class SelfAttention(nn.Module):
         q, k, v = qkv.chunk(3, dim=2)  # Each (B, n_heads, head_dim, H, W)
 
         # Scaled dot-product: (B, n_heads, H, W, H, W) 
-        attn = torch.einsum("bnchw,bncyx->bnhwyx", q, k) / math.sqrt(C) 
+        attn = torch.einsum("bnchw,bncyx->bnhwyx", q, k) / math.sqrt(head_dim)
         attn = attn.view(B, self.n_heads, H, W, -1)
         attn = torch.softmax(attn, dim=-1)  # (B, n_heads, H, W, H*W)
         attn = attn.view(B, self.n_heads, H, W, H, W)
