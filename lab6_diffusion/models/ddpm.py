@@ -104,7 +104,7 @@ class DDPM(nn.Module):
                 eta=ddim_eta,
                 guidance_scale=guidance_scale,
                 return_intermediates=return_immediates,
-                intermediate_every=max(1, ddim_steps // max(1, intermedate_every // (self.num_timesteps // ddim_steps))),
+                intermediate_every=intermedate_every,
             )
         elif sampler == "ddpm":
             return self._sample_ddpm(

@@ -123,7 +123,7 @@ def ddim_sample(
         noise = torch.randn_like(x) if (t_prev >= 0 and eta > 0) else torch.zeros_like(x)
         x = a_prev.sqrt() * x0_hat + dir_xt + sigma * noise
 
-        if return_intermediates and (i % intermediate_every == 0 or i == num_steps - 1):
+        if return_intermediates and ((num_steps - 1 - i) % intermediate_every == 0):
             intermediates.append(x.detach().cpu())
 
     if return_intermediates:

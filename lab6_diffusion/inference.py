@@ -286,6 +286,9 @@ def generate_denoising_process(
 ) -> Tuple[torch.Tensor, List[torch.Tensor]]:
     """Sample one image and return its intermediate denoising frames.
 
+    For DDPM, frames are spaced every ``T // num_frames`` timesteps.
+    For DDIM, frames are spaced every ``ddim_steps // num_frames`` iterations.
+
     Args:
         ddpm (DDPM): DDPM model.
         condition (torch.Tensor): Multi-hot condition of shape (1, num_classes).
@@ -314,7 +317,7 @@ def generate_denoising_process(
         ddim_steps=ddim_steps,
         ddim_eta=ddim_eta,
         return_immediates=True,
-        intermedate_every=every,
+        intermediate_every=every,
     )
     return final.cpu(), [x.cpu() for x in intermediates]
 
