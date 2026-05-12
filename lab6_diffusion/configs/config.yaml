@@ -35,6 +35,10 @@ model:
   num_groups:      32        # GroupNorm groups; must divide channel, ×2, ×4
   mode:            "fan_avg" # "fan_in"/"fan_out"/"fan_avg"
   distribution:    "normal"  # "uniform"/"normal" 
+  # ── Conditioning strategy ────────────────────────────────────────────── #
+  cond_strategy:   "cross_attn" # "additive" | "cross_attn"
+  context_dim:     256          # per-class token dim (cross_attn only)
+  cross_attn_heads: 8           # heads in each cross-attn block (cross_attn only)
 
 # ---------------------------------------------------------------------------
 # Noise schedule
@@ -54,10 +58,10 @@ training:
   num_epochs:        500
   lr:                1e-4
   lr_min:            1e-6    # minimum LR for scheduler; only used if lr_warmup_steps > 0
-  lr_warmup_steps:   500     # linear warmup before constant LR
+  lr_warmup_steps:   1000     # linear warmup before constant LR
   weight_decay:      5e-4    # AdamW weight decay; 0 to disable
   grad_clip:         1.0     # max gradient norm; 0 to disable
-  ema_decay:         0.999  # EMA of model weights for stable sampling
+  ema_decay:         0.995  # EMA of model weights for stable sampling
   mixed_precision:   true    # torch.autocast fp16
   log_every:         100     # steps between loss logs
   save_every:        5       # epochs between periodic checkpoint saves
@@ -71,7 +75,7 @@ sampling:
   sampler:              "ddim" # "ddpm" | "ddim"
   ddim_steps:           50 
   ddim_eta:             0.0    # 0.0 = deterministic DDIM, 1.0 ≈ DDPM
-  guidance_scale:       4.0    # CFG weight w; 1.0 = no guidance
+  guidance_scale:       3.0    # CFG weight w; 1.0 = no guidance
   batch_size:           32     # must cover full test set (32 samples)
   save_grid:            true   # save image grid alongside individual images
   grid_nrow:            8      # images per row in the saved grid
@@ -81,4 +85,4 @@ sampling:
 early_stopping:
   patience:    20      # epochs to wait for improvement before stopping
   min_delta:   1e-5    # minimum absolute loss improvement to count as better
-  min_epochs:  100      # never stop before this many epochs
+  min_epochs:  130      # never stop before this many epochs

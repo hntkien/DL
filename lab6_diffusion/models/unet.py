@@ -1,3 +1,4 @@
+from typing import Optional
 import torch 
 import torch.nn as nn 
 from models.blocks import (
@@ -8,25 +9,42 @@ from models.blocks import (
     conv2d, 
     linear
 )
-from models.condition import TimeEmbedding, ConditionEmbedding
+from models.condition import TimeEmbedding, ConditionEmbedding, ClassContextEmbedding
     
 # ---------------------------------------------------------------------------
 # U-Net
 # ---------------------------------------------------------------------------
 class UNet(nn.Module):
-    """Conditional U-Net for 64 x 64 DDPM image generation. 
-
-    Takes a noisy image, the diffusion timestep, and a multi-hot condiiton vector; returns the predicted noise of the same spatial shape. 
-
-    The condition is merge with the time embedding via element-wise addition before the network, so every ResBlock is implicitly conditioned on both signals through its internal time projection. 
-
+    """Conditional U-Net for 64 x 64 DDPM image generation.
+ 
+    Takes a noisy image, the diffusion timestep, and a multi-hot condition vector; returns the predicted noise of the same spatial shape.
+ 
+    Two conditioning strategies are supported via ``cond_strategy``:
+ 
+    * ``"additive"`` (legacy): the condition is projected to the time embedding dimension and element-wise added to the time embedding before the network.
+ 
+    * ``"cross_attn"`` (Latent-Diffusion-style): the condition becomes a sequence of per-class tokens. The time embedding alone is fed into ResBlocks; the class-token sequence is consumed by cross-attention blocks placed at the existing self-attention resolutions (16×16 and 8×8). 
+ 
     Args:
         in_channels (int): Number of image channels (default 3 for RGB).
-        channel (int): Base channel width; deeper stages use multiples of this values (default 128). 
+        channel (int): Base channel width; deeper stages use multiples of this
+            value (default 128).
         num_classes (int): Number of condition classes (default 24 for iCLEVR).
-        attn_heads (int): Number of self-attention heads at attended resolutions (default 1). 
-        use_affine_time (bool): Use affine GroupNorm (AdaGN) conditioning instead of additive conditioning in ResBlocks (default: False).
+        attn_heads (int): Number of self-attention heads at attended
+            resolutions (default 1).
+        use_affine_time (bool): Use affine GroupNorm (AdaGN) conditioning
+            instead of additive conditioning in ResBlocks (default False).
         dropout (float): Dropout probability in ResBlocks (default 0.0).
+        num_groups (int): GroupNorm groups.
+        mode (str): Variance-scaling fan mode.
+        distribution (str): Variance-scaling distribution.
+        cond_strategy (str): Conditioning strategy: ``"additive"`` or
+            ``"cross_attn"`` (default ``"additive"``).
+        context_dim (int): Per-class context-token dimension used by
+            cross-attention. Ignored when ``cond_strategy="additive"``.
+            Defaults to 256.
+        cross_attn_heads (int): Number of heads in each cross-attention block.
+            Ignored when ``cond_strategy="additive"``. Defaults to 8.
     """
     def __init__(
             self, 
@@ -38,9 +56,18 @@ class UNet(nn.Module):
             dropout: float = 0.0, 
             num_groups: int = 32,
             mode: str = "fan_avg",
-            distribution: str = "uniform"
+            distribution: str = "uniform",
+            cond_strategy: str = "additive",
+            context_dim: int = 256,
+            cross_attn_heads: int = 8,
     ) -> None: 
         super().__init__() 
+        if cond_strategy not in ("additive", "cross_attn"):
+            raise ValueError(
+                f"cond_strategy must be 'additive' or 'cross_attn', got '{cond_strategy}'."
+            )
+        self.cond_strategy = cond_strategy
+        self.context_dim = context_dim
         time_dim = channel * 4  # Time embedding dimension (must match the output of ConditionEmbedding)
         self.num_classes = num_classes
         for ch_width in [channel, channel * 2, channel * 4]:
@@ -63,14 +90,25 @@ class UNet(nn.Module):
                 distribution=distribution
             )
         )
-        self.cond_emb = ConditionEmbedding(
-            num_classes=num_classes, 
-            time_dim=time_dim, 
-            mode=mode,
-            distribution=distribution
-        )
+        if cond_strategy == "additive":
+            # Project condition to time_dim and add to time embedding.
+            self.cond_emb = ConditionEmbedding(
+                num_classes=num_classes,
+                time_dim=time_dim,
+                mode=mode,
+                distribution=distribution,
+            )
+        else:
+            # Cross-attention path: produce a per-class token sequence.
+            self.cond_emb = ClassContextEmbedding(
+                num_classes=num_classes,
+                context_dim=context_dim,
+                mode=mode,
+                distribution=distribution,
+            )
 
         # Shorthand for repeated kwargs
+        use_cross = cond_strategy == "cross_attn"
         def _rb(in_c, out_c, attn=False, num_groups=num_groups, mode=mode, distribution=distribution):
             return ResBlockWithAttention(
                 in_channels=in_c, 
@@ -82,7 +120,10 @@ class UNet(nn.Module):
                 attention_heads=attn_heads, 
                 num_groups=num_groups,
                 mode=mode,
-                distribution=distribution 
+                distribution=distribution,
+                use_cross_attention=(attn and use_cross),
+                context_dim=context_dim if use_cross else None,
+                cross_attention_heads=cross_attn_heads,
             )
         
         # Channel aliases for readability (default: 128, 256, 512)
@@ -168,6 +209,32 @@ class UNet(nn.Module):
             )
         )
 
+    def _prepare_conditioning(
+            self,
+            time: torch.Tensor,
+            condition: torch.Tensor,
+    ) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+        """Build the per-block conditioning signals for the chosen strategy.
+ 
+        Args:
+            time (torch.Tensor): Integer timestep tensor of shape (B,).
+            condition (torch.Tensor): Float32 multi-hot tensor of shape
+                (B, num_classes); values in {0, 1}.
+ 
+        Returns:
+            tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+                ``(emb, context, key_padding_mask)``. ``context`` and
+                ``key_padding_mask`` are ``None`` in the additive strategy.
+        """
+        if self.cond_strategy == "additive":
+            emb = self.time_emb(time) + self.cond_emb(condition)
+            return emb, None, None
+        # cross_attn
+        emb = self.time_emb(time)
+        context = self.cond_emb(condition)              # (B, num_classes, context_dim)
+        key_padding_mask = condition > 0.5              # (B, num_classes), True=present
+        return emb, context, key_padding_mask
+
     def forward(
             self, 
             x: torch.Tensor, 
@@ -176,7 +243,14 @@ class UNet(nn.Module):
     ) -> torch.Tensor:
         """Predict the noise added to ``x`` at timestep ``t``. 
 
-        The time and condition embeddings are merged by element-wise addition before the network, producing a single ``emb`` vector that is passed to every ResBlock. 
+        Depending on ``cond_strategy``:
+ 
+        * Additive: ``emb = time_emb(t) + cond_emb(c)`` is passed to every
+          ResBlock; no cross-attention is invoked.
+        * Cross-attention: ``emb = time_emb(t)`` and a per-class context
+          sequence (plus key-padding mask) are both threaded through every
+          ResBlockWithAttention. Blocks without cross-attention layers simply
+          ignore the extra context arguments.
 
         Args:
             x (torch.Tensor): _description_
@@ -187,79 +261,88 @@ class UNet(nn.Module):
             torch.Tensor: _description_
         """
         # ── Merged embedding ───────────────────────────────────────────── #
-        emb = self.time_emb(time) + self.cond_emb(condition) # (B, time_dim)
+        emb, context, kpm = self._prepare_conditioning(time, condition)
 
         # ── Encoder ────────────────────────────────────────────────────── #
-        f0 = self.init_conv(x)        # (B, 128, 64, 64)
-        f0a = self.down_0a(f0, emb)   # (B, 128, 64, 64)
-        f0b = self.down_0b(f0a, emb)  # (B, 128, 64, 64)
-        f01 = self.down_01(f0b)       # (B, 128, 32, 32)
-
-        f1a = self.down_1a(f01, emb)  # (B, 256, 32, 32)
-        f1b = self.down_1b(f1a, emb)  # (B, 256, 32, 32)
-        f12 = self.down_12(f1b)       # (B, 256, 16, 16)
-
-        f2a = self.down_2a(f12, emb)  # (B, 256, 16, 16)
-        f2b = self.down_2b(f2a, emb)  # (B, 256, 16, 16)
-        f23 = self.down_23(f2b)       # (B, 256, 8, 8)
-
-        f3a = self.down_3a(f23, emb)  # (B, 512, 8, 8)
-        f3b = self.down_3b(f3a, emb)  # (B, 512, 8, 8)
-
+        f0 = self.init_conv(x)                                # (B, 128, 64, 64)
+        f0a = self.down_0a(f0, emb, context, kpm)             # (B, 128, 64, 64)
+        f0b = self.down_0b(f0a, emb, context, kpm)            # (B, 128, 64, 64)
+        f01 = self.down_01(f0b)                               # (B, 128, 32, 32)
+ 
+        f1a = self.down_1a(f01, emb, context, kpm)            # (B, 256, 32, 32)
+        f1b = self.down_1b(f1a, emb, context, kpm)            # (B, 256, 32, 32)
+        f12 = self.down_12(f1b)                               # (B, 256, 16, 16)
+ 
+        f2a = self.down_2a(f12, emb, context, kpm)            # (B, 256, 16, 16)
+        f2b = self.down_2b(f2a, emb, context, kpm)            # (B, 256, 16, 16)
+        f23 = self.down_23(f2b)                               # (B, 256, 8, 8)
+ 
+        f3a = self.down_3a(f23, emb, context, kpm)            # (B, 512, 8, 8)
+        f3b = self.down_3b(f3a, emb, context, kpm)            # (B, 512, 8, 8)
+ 
         # ── Bottleneck ─────────────────────────────────────────────────── #
-        x = self.mid_a(f3b, emb)       # (B, 512, 8, 8)
-        x = self.mid_b(x, emb)         # (B, 512, 8, 8)
-
+        x = self.mid_a(f3b, emb, context, kpm)                # (B, 512, 8, 8)
+        x = self.mid_b(x, emb, context, kpm)                  # (B, 512, 8, 8)
+ 
         # ── Decoder ────────────────────────────────────────────────────── #
-        x = self.up_3a(torch.cat([x, f3b], dim=1), emb)  # (B, 1024, 8, 8) -> (B, 512, 8, 8)
-        x = self.up_3b(torch.cat([x, f3a], dim=1), emb)  # (B, 1024, 8, 8) -> (B, 512, 8, 8)
-        x = self.up_3c(torch.cat([x, f23], dim=1), emb)  # (B, 768, 8, 8) -> (B, 512, 8, 8)
-        x = self.up_32(x)                                  # (B, 512, 8, 8) -> (B, 512, 16, 16)
-
-        x = self.up_2a(torch.cat([x, f2b], dim=1), emb)  # (B, 512, 16, 16) -> (B, 256, 16, 16)
-        x = self.up_2b(torch.cat([x, f2a], dim=1), emb)  # (B, 512, 16, 16) -> (B, 256, 16, 16)
-        x = self.up_2c(torch.cat([x, f12], dim=1), emb)  # (B, 512, 16, 16) -> (B, 256, 16, 16)
-        x = self.up_21(x)                                  # (B, 256, 16, 16) -> (B, 256, 32, 32)
-
-        x = self.up_1a(torch.cat([x, f1b], dim=1), emb)  # (B, 512, 32, 32) -> (B, 128, 32, 32)
-        x = self.up_1b(torch.cat([x, f1a], dim=1), emb)  # (B, 384, 32, 32) -> (B, 128, 32, 32)
-        x = self.up_1c(torch.cat([x, f01], dim=1), emb)  # (B, 256, 32, 32) -> (B, 128, 32, 32)
-        x = self.up_10(x)                                 # (B, 128, 32, 32) -> (B, 128, 64, 64)
-
-        x = self.up_0a(torch.cat([x, f0b], dim=1), emb)  # (B, 256, 64, 64) -> (B, 128, 64, 64)
-        x = self.up_0b(torch.cat([x, f0a], dim=1), emb)  # (B, 256, 64, 64) -> (B, 128, 64, 64)
-        x = self.up_0c(torch.cat([x, f0], dim=1), emb)   # (B, 256, 64, 64) -> (B, 128, 64, 64)
-
+        x = self.up_3a(torch.cat([x, f3b], dim=1), emb, context, kpm)  # → (B, 512, 8, 8)
+        x = self.up_3b(torch.cat([x, f3a], dim=1), emb, context, kpm)  # → (B, 512, 8, 8)
+        x = self.up_3c(torch.cat([x, f23], dim=1), emb, context, kpm)  # → (B, 512, 8, 8)
+        x = self.up_32(x)                                               # → (B, 512, 16, 16)
+ 
+        x = self.up_2a(torch.cat([x, f2b], dim=1), emb, context, kpm)  # → (B, 256, 16, 16)
+        x = self.up_2b(torch.cat([x, f2a], dim=1), emb, context, kpm)  # → (B, 256, 16, 16)
+        x = self.up_2c(torch.cat([x, f12], dim=1), emb, context, kpm)  # → (B, 256, 16, 16)
+        x = self.up_21(x)                                               # → (B, 256, 32, 32)
+ 
+        x = self.up_1a(torch.cat([x, f1b], dim=1), emb, context, kpm)  # → (B, 128, 32, 32)
+        x = self.up_1b(torch.cat([x, f1a], dim=1), emb, context, kpm)  # → (B, 128, 32, 32)
+        x = self.up_1c(torch.cat([x, f01], dim=1), emb, context, kpm)  # → (B, 128, 32, 32)
+        x = self.up_10(x)                                               # → (B, 128, 64, 64)
+ 
+        x = self.up_0a(torch.cat([x, f0b], dim=1), emb, context, kpm)  # → (B, 128, 64, 64)
+        x = self.up_0b(torch.cat([x, f0a], dim=1), emb, context, kpm)  # → (B, 128, 64, 64)
+        x = self.up_0c(torch.cat([x, f0], dim=1), emb, context, kpm)   # → (B, 128, 64, 64)
+ 
         return self.out(x)  # (B, in_channels, 64, 64)
 
 # ---------------------------------------------------------------------------
 # Quick shape check
 # ---------------------------------------------------------------------------
-
 if __name__ == "__main__":
-    model = UNet(
-        in_channels=3, 
-        channel=128, 
-        num_classes=24, 
-        attn_heads=1, 
-        use_affine_time=False, 
-        dropout=0.0,
-        num_groups=32,
-        mode="fan_avg",
-        distribution="uniform"
-    )
-    B = 2
-    img   = torch.randn(B, 3, 64, 64)
-    t     = torch.tensor([100, 500])
-    cond  = torch.zeros(B, 24)
-    cond[0, [2, 9]] = 1.0   # blue cube + red sphere
-    cond[1, [0]]    = 1.0   # gray cube
-
-    out = model(img, t, cond)
-    print(f"Input : {tuple(img.shape)}")
-    print(f"Output: {tuple(out.shape)}")
-    assert out.shape == img.shape, "Output shape mismatch!"
-    print("Shape check passed.")
-
-    total_params = sum(p.numel() for p in model.parameters())
-    print(f"Parameters: {total_params / 1e6:.1f}M")
+    for strategy in ("additive", "cross_attn"):
+        print(f"\n=== cond_strategy={strategy} ===")
+        model = UNet(
+            in_channels=3,
+            channel=128,
+            num_classes=24,
+            attn_heads=8,
+            use_affine_time=True,
+            dropout=0.0,
+            num_groups=32,
+            mode="fan_avg",
+            distribution="normal",
+            cond_strategy=strategy,
+            context_dim=256,
+            cross_attn_heads=8,
+        )
+        B = 2
+        img   = torch.randn(B, 3, 64, 64)
+        t     = torch.tensor([100, 500])
+        cond  = torch.zeros(B, 24)
+        cond[0, [2, 9]] = 1.0   # blue cube + red sphere
+        cond[1, [0]]    = 1.0   # gray cube
+ 
+        out = model(img, t, cond)
+        print(f"Input : {tuple(img.shape)}")
+        print(f"Output: {tuple(out.shape)}")
+        assert out.shape == img.shape, "Output shape mismatch!"
+ 
+        # CFG null sanity: all-zero condition must still produce a valid output.
+        null_cond = torch.zeros(B, 24)
+        out_null = model(img, t, null_cond)
+        assert out_null.shape == img.shape
+        print("Shape check passed (incl. CFG null).")
+ 
+        total_params = sum(p.numel() for p in model.parameters())
+        print(f"Parameters: {total_params / 1e6:.1f}M")

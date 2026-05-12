@@ -1,4 +1,5 @@
 import math 
+from typing import Optional
 import torch 
 import torch.nn as nn 
 import torch.nn.functional as F 
@@ -371,21 +372,179 @@ class SelfAttention(nn.Module):
         return x + out
 
 # ---------------------------------------------------------------------------
+# Cross-attention block
+# ---------------------------------------------------------------------------
+class CrossAttention(nn.Module):
+    """Multi-head cross-attention from spatial features to a context sequence.
+
+    Reference:
+        Rombach et al., "High-Resolution Image Synthesis with Latent Diffusion
+        Models" (CVPR 2022), §3.3 (Conditioning Mechanisms).
+
+    Args:
+        in_channels (int): Channel count of the spatial feature map.
+        context_dim (int): Per-token dimension of the context sequence.
+        n_heads (int): Number of attention heads. ``in_channels`` must be
+            divisible by ``n_heads``.
+        num_groups (int): GroupNorm groups for the spatial pre-norm.
+        mode (str): Variance-scaling fan mode for layer init.
+        distribution (str): Variance-scaling distribution for layer init.
+    """
+    def __init__(
+            self,
+            in_channels: int,
+            context_dim: int,
+            n_heads: int = 1,
+            num_groups: int = 32,
+            mode: str = "fan_avg",
+            distribution: str = "uniform",
+    ) -> None:
+        super().__init__()
+        if in_channels % n_heads != 0:
+            raise ValueError(
+                f"in_channels={in_channels} must be divisible by n_heads={n_heads}."
+            )
+        self.n_heads = n_heads
+        self.head_dim = in_channels // n_heads
+        self.scale = self.head_dim ** -0.5
+
+        # Pre-norms (transformer-style): GroupNorm on spatial Q-source,
+        # LayerNorm on the context-sequence K/V source.
+        self.norm = nn.GroupNorm(num_groups=num_groups, num_channels=in_channels)
+        self.norm_ctx = nn.LayerNorm(context_dim)
+
+        # Q: 1×1 conv keeps spatial layout (matches SelfAttention style).
+        self.to_q = conv2d(
+            in_channels=in_channels,
+            out_channels=in_channels,
+            kernel_size=1,
+            mode=mode,
+            distribution=distribution,
+        )
+        # K, V: linear over the token dimension.
+        self.to_k = linear(
+            in_channels=context_dim,
+            out_channels=in_channels,
+            mode=mode,
+            distribution=distribution,
+        )
+        self.to_v = linear(
+            in_channels=context_dim,
+            out_channels=in_channels,
+            mode=mode,
+            distribution=distribution,
+        )
+        # Output projection — zero-init for an identity start.
+        self.to_out = conv2d(
+            in_channels=in_channels,
+            out_channels=in_channels,
+            kernel_size=1,
+            scale=1e-10,
+            mode=mode,
+            distribution=distribution,
+        )
+
+    def forward(
+            self,
+            x: torch.Tensor,
+            context: torch.Tensor,
+            key_padding_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Apply cross-attention with a residual connection.
+
+        Args:
+            x (torch.Tensor): Spatial feature map of shape (B, in_channels, H, W).
+            context (torch.Tensor): Context sequence of shape (B, N, context_dim).
+                Tokens for absent classes should already be zeroed by the
+                upstream embedding module.
+            key_padding_mask (Optional[torch.Tensor]): Bool tensor of shape
+                (B, N). ``True`` keeps a token, ``False`` masks it. Rows that
+                are entirely False are unmasked (softmax fallback); this is
+                safe because the corresponding V rows are zero.
+
+        Returns:
+            torch.Tensor: Output feature map of shape (B, in_channels, H, W).
+        """
+        B, C, H, W = x.shape
+        N = context.shape[1]
+        HW = H * W
+        d = self.head_dim
+        n = self.n_heads
+
+        # Pre-norm.
+        h = self.norm(x)
+        ctx = self.norm_ctx(context)
+
+        # Project. Q is (B, C, H, W); K, V are (B, N, C).
+        q = self.to_q(h)
+        k = self.to_k(ctx)
+        v = self.to_v(ctx)
+
+        # Reshape to multi-head: bring (heads, head_dim) to the front.
+        # Q: (B, C, H, W) → (B, n, d, HW)
+        q = q.view(B, n, d, HW)
+        # K, V: (B, N, C) → (B, n, d, N)
+        k = k.view(B, N, n, d).permute(0, 2, 3, 1).contiguous()
+        v = v.view(B, N, n, d).permute(0, 2, 3, 1).contiguous()
+
+        # Scores: (B, n, HW, N) = Qᵀ · K
+        attn = torch.einsum("bndq,bndk->bnqk", q, k) * self.scale
+
+        if key_padding_mask is not None:
+            # If a sample has no active class (CFG null), every key is masked;
+            # softmax over -inf would NaN. Fallback: leave that row unmasked.
+            # The V projection of zero context is zero, so the attention
+            # output is still zero — the desired behaviour.
+            all_inactive = ~key_padding_mask.any(dim=1, keepdim=True)  # (B, 1)
+            kpm = key_padding_mask | all_inactive                       # (B, N)
+            mask = ~kpm[:, None, None, :]                               # (B, 1, 1, N)
+            attn = attn.masked_fill(mask, float("-inf"))
+
+        attn = torch.softmax(attn, dim=-1)
+
+        # Aggregate: (B, n, HW, N) × (B, n, d, N) → (B, n, d, HW)
+        out = torch.einsum("bnqk,bndk->bndq", attn, v)
+        # Back to (B, C, H, W)
+        out = out.contiguous().view(B, C, H, W)
+        out = self.to_out(out)
+
+        return x + out
+
+# ---------------------------------------------------------------------------
 # Combined residual + (optional) attention block
 # ---------------------------------------------------------------------------
 class ResBlockWithAttention(nn.Module):
-    """Residual block with optional self-attention.
+    """Residual block with optional self-attention and optional cross-attention.
 
-    Used in the U-Net decoder at each resolution, with attention applied at
-    lower resolutions (≤ 16x16) to capture global context.
+    Block ordering (Latent-Diffusion / Stable-Diffusion pattern):
+
+        x ─► ResBlock(time-conditioned) ─► [SelfAttention] ─► [CrossAttention(context)] ─► out
+
+    Self-attention captures global spatial context within the feature map;
+    cross-attention injects external conditioning (per-class context tokens).
+    Both are skipped when their respective flags are off, so the block can
+    represent the additive-only baseline (cross-attn off) and the
+    cross-attention variant (cross-attn on at attention resolutions) with the
+    same class.
 
     Args:
         in_channels (int): Number of input channels.
         out_channels (int): Number of output channels.
-        time_dim (int): Dimension of the merged time+condition embedding.
-        use_affine_time (bool): Use affine GroupNorm conditioning (default False).
-        dropout (float): Dropout probability on the second conv (default 0).
-        n_heads (int): Number of attention heads (default 0, i.e. no attention).
+        time_dim (int): Dimension of the time embedding consumed by the ResBlock.
+        dropout (float): Dropout probability inside the ResBlock.
+        use_attention (bool): If True, apply self-attention after the ResBlock.
+        attention_heads (int): Number of self-attention heads.
+        use_affine_time (bool): Use AdaGN-style affine modulation in the ResBlock.
+        num_groups (int): GroupNorm groups.
+        mode (str): Variance-scaling fan mode for layer init.
+        distribution (str): Variance-scaling distribution for layer init.
+        use_cross_attention (bool): If True, apply cross-attention after the
+            (optional) self-attention. Requires ``context_dim`` to be set and
+            ``context`` to be passed to ``forward``.
+        context_dim (int | None): Per-token dimension of the context sequence
+            consumed by cross-attention. Required when ``use_cross_attention``
+            is True.
+        cross_attention_heads (int): Number of cross-attention heads.
     """
     def __init__(
             self, 
@@ -398,7 +557,10 @@ class ResBlockWithAttention(nn.Module):
             use_affine_time: bool = False, 
             num_groups: int = 32,
             mode: str = "fan_avg",
-            distribution: str = "uniform"
+            distribution: str = "uniform",
+            use_cross_attention: bool = False,
+            context_dim: Optional[int] = None,
+            cross_attention_heads: int = 1,
     ) -> None: 
         super().__init__() 
         self.res = ResBlock(
@@ -419,13 +581,40 @@ class ResBlockWithAttention(nn.Module):
                 mode=mode,
                 distribution=distribution
             )
+        if use_cross_attention:
+            if context_dim is None:
+                raise ValueError(
+                    "context_dim must be provided when use_cross_attention=True."
+                )
+            self.cross_attn = CrossAttention(
+                in_channels=out_channels,
+                context_dim=context_dim,
+                n_heads=cross_attention_heads,
+                num_groups=num_groups,
+                mode=mode,
+                distribution=distribution,
+            )
 
-    def forward(self, x: torch.Tensor, emb: torch.Tensor) -> torch.Tensor:
-        """Forward Pass. 
+    def forward(
+            self,
+            x: torch.Tensor,
+            emb: torch.Tensor,
+            context: Optional[torch.Tensor] = None,
+            key_padding_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Forward pass.
 
         Args:
             x (torch.Tensor): Input feature map of shape (B, in_channels, H, W).
-            emb (torch.Tensor): Merged time+condition embedding of shape (B, time_dim).
+            emb (torch.Tensor): Time embedding of shape (B, time_dim). In the
+                additive conditioning path this is the time+condition sum; in
+                the cross-attention path it is the time embedding alone.
+            context (Optional[torch.Tensor]): Context sequence of shape
+                (B, N, context_dim) for cross-attention. Ignored when this
+                block has no cross-attention layer.
+            key_padding_mask (Optional[torch.Tensor]): Bool tensor of shape
+                (B, N) marking which context tokens are present. Forwarded to
+                cross-attention when applicable.
 
         Returns:
             torch.Tensor: Output feature map of shape (B, out_channels, H, W).
@@ -433,4 +622,11 @@ class ResBlockWithAttention(nn.Module):
         x = self.res(x, emb)
         if hasattr(self, "attn"):
             x = self.attn(x)
+        if hasattr(self, "cross_attn"):
+            if context is None:
+                raise ValueError(
+                    "ResBlockWithAttention has cross-attention enabled but "
+                    "no context tensor was provided."
+                )
+            x = self.cross_attn(x, context, key_padding_mask=key_padding_mask)
         return x
