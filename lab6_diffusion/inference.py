@@ -77,7 +77,7 @@ def parse_args():
     parser.add_argument(
         "--output_dir", 
         type=str, 
-        default="outputs", 
+        default="./images", 
         help="Directory to save generated images and grids (default: outputs/)."
     )
     parser.add_argument(

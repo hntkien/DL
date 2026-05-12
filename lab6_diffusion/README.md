@@ -48,7 +48,7 @@ python3 train.py --config configs/config.yaml
 If training was interrupted, or you wish to fine-tune, pass the ```--resume` flag:
 
 ```bash
-python train.py --config configs/config.yaml --resume ckpts/ckpt_epoch050.pt
+python3 train.py --config configs/config.yaml --resume ckpts/ckpt_epoch050.pt
 ```
 
 Checkpoints will be saved to the `./ckpts/` directory. 
@@ -56,7 +56,7 @@ Checkpoints will be saved to the `./ckpts/` directory.
 ## Inference
 
 ```bash
-# Example command (adjust based on your exact inference.py arguments)
-python inference.py --config configs/config.yaml --ckpt ckpts/best.pt
+# Example command
+python3 inference.py --config configs/config.yaml --ckpt ckpts/best.pt
 ```
 
