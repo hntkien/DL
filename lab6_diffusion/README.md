@@ -37,6 +37,7 @@ bash get_dataset.sh
 ```bash
 bash get_checkpoint.sh
 ```
+Also download the `best_cross_cosine.pt` checkpoint manually from [this link](https://drive.google.com/file/d/1zPKWrpKDHK6_XzKISVinPJ2oQUB6tqgW/view?usp=sharing) and place the file in `./ckpts/`.
 
 ## Training
 
@@ -55,8 +56,13 @@ Checkpoints will be saved to the `./ckpts/` directory.
 
 ## Inference
 
+Use the pretrained checkpoint for the current configuration: 
+
 ```bash
-# Example command
-python3 inference.py --config configs/config.yaml --ckpt ckpts/best.pt
+python3 inference.py --config configs/config.yaml --ckpt ckpts/best_cross_cosine.pt
 ```
 
+or use the newly trained one: 
+```bash
+python3 inference.py --config configs/config.yaml --ckpt ckpts/best.pt
+```
