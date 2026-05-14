@@ -1,0 +1,33 @@
+# Lab 5 — Task 2: Vanilla DQN on ALE/Pong-v5
+# Run from lab5_dqn/ project root:
+#     bash code/train_task2.sh
+# CLI flags override any value set here.
+
+# Env / I/O
+env_name: ALE/Pong-v5
+save_dir: ./results/task2
+wandb_project: DLP-Lab5-DQN-Pong
+wandb_run_name: task2-vanilla-dqn
+episodes: 5000                   # ~1M env steps typically reached before this
+
+# Optimization / replay
+batch_size: 32
+memory_size: 100000              # ~5.6 GB host RAM for stacked uint8 frames
+lr: 1.0e-4                       # Adam, Mnih-2015 setting
+discount_factor: 0.99
+grad_clip: 10.0
+
+# Exploration (epsilon decayed once per training update)
+epsilon_start: 1.0
+epsilon_decay: 0.999996          # reaches ~0.1 around 1M env steps
+epsilon_min: 0.05
+
+# Training schedule
+target_update_frequency: 1000    # in gradient-update steps
+replay_start_size: 50000         # 50k random transitions before learning
+max_episode_steps: 27000         # Atari standard cap (~108k ALE frames)
+train_per_step: 1                # ALE/Pong-v5 already frame-skips by 4
+
+# Evaluation
+num_eval_episodes: 5
+best_reward_init: -21.0          # worst possible Pong score → always save first eval

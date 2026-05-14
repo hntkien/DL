@@ -13,7 +13,7 @@ episodes: 1000
  
 # Optimization / replay
 batch_size: 64
-memory_size: 10000
+memory_size: 10000 # test with 50000 later
 lr: 5.0e-4
 discount_factor: 0.99
 grad_clip: 10.0
@@ -21,10 +21,10 @@ grad_clip: 10.0
 # Exploration (epsilon-greedy, decayed once per training update)
 epsilon_start: 1.0
 epsilon_decay: 0.9995
-epsilon_min: 0.05
+epsilon_min: 0.05 # test with 0.01 later
  
 # Training schedule
-target_update_frequency: 500
+target_update_frequency: 500 # test with 1000 later
 replay_start_size: 1000          # start learning after 1k transitions
 max_episode_steps: 500           # CartPole-v1 natural cap
 train_per_step: 1
