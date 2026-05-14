@@ -1,3 +1,5 @@
 .key
 __pycache__/
 *.mp4
+wandb/
+*.pt

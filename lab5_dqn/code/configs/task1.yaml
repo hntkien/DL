@@ -1,0 +1,34 @@
+# Lab 5 — Task 1: Vanilla DQN on CartPole-v1
+# All paths are relative to the directory from which you launch training
+# (intended cwd: lab5_dqn/). CLI flags override any value set here.
+#   bash train_task1.sh
+#   bash train_task1.sh --lr 1e-3 --wandb_run_name task1-lr1e3
+
+# Env / I/O
+env_name: CartPole-v1
+save_dir: ./results/task1
+wandb_project: DLP-Lab5-DQN-CartPole
+wandb_run_name: task1-vanilla-dqn
+episodes: 1000
+ 
+# Optimization / replay
+batch_size: 64
+memory_size: 10000
+lr: 5.0e-4
+discount_factor: 0.99
+grad_clip: 10.0
+ 
+# Exploration (epsilon-greedy, decayed once per training update)
+epsilon_start: 1.0
+epsilon_decay: 0.9995
+epsilon_min: 0.05
+ 
+# Training schedule
+target_update_frequency: 500
+replay_start_size: 1000          # start learning after 1k transitions
+max_episode_steps: 500           # CartPole-v1 natural cap
+train_per_step: 1
+ 
+# Evaluation
+num_eval_episodes: 5
+best_reward_init: 0.0
