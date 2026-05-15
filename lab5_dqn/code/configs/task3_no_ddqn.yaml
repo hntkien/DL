@@ -1,0 +1,45 @@
+# Lab 5 — Task 3 Ablation: PER + n-step, NO Double DQN
+# Run from lab5_dqn/ project root:
+#     bash code/train_task3.sh --config code/configs/task3_no_ddqn.yaml
+
+# Env / I/O
+env_name: ALE/Pong-v5
+save_dir: ./results/task3_no_ddqn
+wandb_project: DLP-Lab5-DQN-Pong
+wandb_run_name: task3-ablation-no-ddqn
+episodes: 5000
+
+# Optimization / replay
+batch_size: 32
+memory_size: 100000
+lr: 1.0e-4
+discount_factor: 0.99
+grad_clip: 10.0
+
+# Exploration
+epsilon_start: 1.0
+epsilon_decay: 0.999996
+epsilon_min: 0.05
+
+# Training schedule
+target_update_frequency: 1000
+replay_start_size: 50000
+max_episode_steps: 27000
+train_per_step: 1
+
+# Evaluation
+num_eval_episodes: 5
+best_reward_init: -21.0
+
+# Enhancements — DDQN OFF
+use_ddqn: false
+use_per: true
+n_step: 3
+per_alpha: 0.6
+per_beta_start: 0.4
+per_beta_anneal_steps: 1000000
+loss_type: huber
+
+# Task 3 grading
+score_threshold: 19.0
+snapshot_steps: [600000, 1000000, 1500000]
