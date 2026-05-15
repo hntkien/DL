@@ -31,3 +31,4 @@ imageio==2.37.3
 imageio-ffmpeg==0.6.0 
 opencv-python==4.13.0.92
 wandb==0.26.1
+pygame==2.6.1
