@@ -1,7 +1,8 @@
 """Evaluate a Task-2/Task-3 (ALE/Pong-v5) DQN snapshot.
 
 Runs N seeded episodes, prints per-episode reward and the mean/std,
-matching the grading-protocol screenshot style.
+matching the grading-protocol screenshot style. Supports the same Atari
+env-wrapper flags as the training script so the eval env matches training.
 """
 
 import argparse
@@ -26,6 +27,49 @@ logging.getLogger("imageio_ffmpeg").setLevel(logging.ERROR)
 os.environ.setdefault("IMAGEIO_FFMPEG_LOG_LEVEL", "error")
 
 gym.register_envs(ale_py)
+
+
+class PongActionSubsetWrapper(gym.ActionWrapper):
+    """Restrict Pong's 6-action set to {NOOP=0, RIGHT=2, LEFT=3}.
+
+    Mirrors the wrapper used at training time so the loaded Q-network's
+    3-output head aligns with the env's 3-action space.
+
+    Args:
+        env (gym.Env): Underlying Gymnasium env with ALE-Pong's 6-action set.
+    """
+
+    _SUBSET = [0, 2, 3]
+
+    def __init__(self, env):
+        super().__init__(env)
+        self.action_space = gym.spaces.Discrete(len(self._SUBSET))
+
+    def action(self, action):
+        return self._SUBSET[int(action)]
+
+
+def build_env(env_name, *, render_mode="rgb_array",
+              disable_sticky_actions=False, pong_action_subset=False):
+    """Construct the eval env with the same wrapper config as training.
+
+    Args:
+        env_name (str): Gymnasium env id (typically "ALE/Pong-v5").
+        render_mode (str): Forwarded to ``gym.make``.
+        disable_sticky_actions (bool): If True and env is ALE/*, pass
+            ``repeat_action_probability=0.0``.
+        pong_action_subset (bool): If True and "Pong" in env_name, wrap with
+            ``PongActionSubsetWrapper``.
+    Returns:
+        gym.Env: Configured environment.
+    """
+    kwargs = {"render_mode": render_mode}
+    if env_name.startswith("ALE/") and disable_sticky_actions:
+        kwargs["repeat_action_probability"] = 0.0
+    env = gym.make(env_name, **kwargs)
+    if pong_action_subset and "Pong" in env_name:
+        env = PongActionSubsetWrapper(env)
+    return env
 
 
 class DQN(nn.Module):
@@ -90,7 +134,11 @@ def evaluate(args):
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 
-    env = gym.make("ALE/Pong-v5", render_mode="rgb_array")
+    env = build_env(
+        "ALE/Pong-v5",
+        disable_sticky_actions=args.disable_sticky_actions,
+        pong_action_subset=args.pong_action_subset,
+    )
     env.action_space.seed(args.seed)
     env.observation_space.seed(args.seed)
 
@@ -105,9 +153,12 @@ def evaluate(args):
         os.makedirs(args.output_dir, exist_ok=True)
 
     # ----- Header -----
-    print(f"Model:  {args.model_path}")
-    print(f"Env:    ALE/Pong-v5  |  Episodes: {args.episodes}  |  "
+    print(f"Model:   {args.model_path}")
+    print(f"Env:     ALE/Pong-v5  |  Episodes: {args.episodes}  |  "
           f"Seeds: {args.seed} to {args.seed + args.episodes - 1}")
+    print(f"Wrap:    sticky_disabled={args.disable_sticky_actions}  "
+          f"pong_action_subset={args.pong_action_subset}  "
+          f"num_actions={num_actions}")
     print("-" * 60)
     print(f"{'Episode':>7} | {'Seed':>5} | {'Reward':>8}")
     print("-" * 60)
@@ -160,5 +211,12 @@ if __name__ == "__main__":
                         help="Base seed; episode i uses seed+i (default 0 -> grading seeds 0..19)")
     parser.add_argument("--no-video", action="store_true",
                         help="Skip saving mp4 videos for a faster, cleaner eval.")
+    # Atari env-side wrappers - MUST match training. Defaults off (Task 2 setup).
+    parser.add_argument(
+        "--disable-sticky-actions", action="store_true", default=False,
+        help="Pass repeat_action_probability=0.0 (set this for Task 3 retrain snapshots).")
+    parser.add_argument(
+        "--pong-action-subset", action="store_true", default=False,
+        help="Use the 3-action {NOOP, RIGHT, LEFT} subset (set this for Task 3 retrain snapshots).")
     args = parser.parse_args()
     evaluate(args)

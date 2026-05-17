@@ -31,6 +31,63 @@ def init_weights(m):
             nn.init.constant_(m.bias, 0)
 
 
+class PongActionSubsetWrapper(gym.ActionWrapper):
+    """Restrict ALE/Pong-v5's 6-action set to the 3 physically meaningful ones.
+
+    Pong's minimal action set (``full_action_space=False``) is
+    [NOOP=0, FIRE=1, RIGHT=2, LEFT=3, RIGHTFIRE=4, LEFTFIRE=5]. Once the ball is
+    in play, FIRE is a no-op, so RIGHTFIRE/LEFTFIRE behave identically to
+    RIGHT/LEFT. This wrapper exposes only {NOOP, RIGHT, LEFT}, shrinking the
+    Q-head from 6 outputs to 3 and removing the redundant action duplication
+    that wastes network capacity. Matches Mnih-2015's Pong action set.
+
+    Args:
+        env (gym.Env): Underlying Gymnasium env with ALE-Pong's 6-action set.
+    Input action (from agent):
+        int in {0, 1, 2}: NOOP, RIGHT, LEFT respectively.
+    Output action (forwarded to env):
+        int in {0, 2, 3}: ALE Pong's NOOP, RIGHT, LEFT.
+    """
+
+    _SUBSET = [0, 2, 3]  # NOOP, RIGHT, LEFT
+
+    def __init__(self, env):
+        super().__init__(env)
+        self.action_space = gym.spaces.Discrete(len(self._SUBSET))
+
+    def action(self, action):
+        return self._SUBSET[int(action)]
+
+
+def build_env(env_name, *, render_mode="rgb_array",
+              disable_sticky_actions=False, pong_action_subset=False):
+    """Create a Gymnasium env, optionally applying Atari-specific wrappers.
+
+    For ALE envs (``env_name`` starts with ``"ALE/"``), supports disabling
+    the default 25%-probability sticky actions (which add extra stochasticity
+    via ``repeat_action_probability``). For Pong specifically, supports
+    reducing the action space to {NOOP, RIGHT, LEFT}.
+
+    Args:
+        env_name (str): Gymnasium env id (e.g. "ALE/Pong-v5", "CartPole-v1").
+        render_mode (str): Forwarded to ``gym.make``.
+        disable_sticky_actions (bool): If True and env is ALE/*, pass
+            ``repeat_action_probability=0.0`` to ``gym.make``. Default False
+            preserves the ALE v5 default of 0.25.
+        pong_action_subset (bool): If True and "Pong" in env_name, wrap with
+            ``PongActionSubsetWrapper``.
+    Returns:
+        gym.Env: Configured environment.
+    """
+    kwargs = {"render_mode": render_mode}
+    if env_name.startswith("ALE/") and disable_sticky_actions:
+        kwargs["repeat_action_probability"] = 0.0
+    env = gym.make(env_name, **kwargs)
+    if pong_action_subset and "Pong" in env_name:
+        env = PongActionSubsetWrapper(env)
+    return env
+
+
 class DQN(nn.Module):
     """Deep Q-Network with two modes.
 
@@ -240,8 +297,16 @@ class DQNAgent:
     """
 
     def __init__(self, env_name="CartPole-v1", args=None):
-        self.env = gym.make(env_name, render_mode="rgb_array")
-        self.test_env = gym.make(env_name, render_mode="rgb_array")
+        self.env = build_env(
+            env_name,
+            disable_sticky_actions=args.disable_sticky_actions,
+            pong_action_subset=args.pong_action_subset,
+        )
+        self.test_env = build_env(
+            env_name,
+            disable_sticky_actions=args.disable_sticky_actions,
+            pong_action_subset=args.pong_action_subset,
+        )
         self.num_actions = self.env.action_space.n
 
         obs_shape = self.env.observation_space.shape
@@ -256,6 +321,9 @@ class DQNAgent:
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print("Using device:", self.device)
+        print(f"Env: {env_name} | num_actions: {self.num_actions} | "
+              f"sticky_disabled: {args.disable_sticky_actions} | "
+              f"pong_action_subset: {args.pong_action_subset}")
 
         self.q_net = DQN(self.num_actions, self.input_dim).to(self.device)
         self.q_net.apply(init_weights)
@@ -442,6 +510,7 @@ class DQNAgent:
                         {
                             "First reached threshold": self.score_threshold,
                             "Steps to threshold": self.env_count,
+                            "Env Step Count": self.env_count,
                         }
                     )
                 print(
@@ -597,6 +666,15 @@ def _build_parser(parents=()):
         "--snapshot_steps", type=int, nargs="*", default=None,
         help="Env-step milestones at which to save snapshots (e.g. 600000 1000000 ...).",
     )
+    # Atari env-side wrappers
+    parser.add_argument(
+        "--disable_sticky_actions", action="store_true", default=False,
+        help="Pass repeat_action_probability=0.0 for ALE envs to disable sticky actions.",
+    )
+    parser.add_argument(
+        "--pong_action_subset", action="store_true", default=False,
+        help="For Pong, restrict the action space to {NOOP, RIGHT, LEFT} (3 actions).",
+    )
     return parser
 
 
@@ -626,5 +704,11 @@ if __name__ == "__main__":
         save_code=True,
         config=vars(args),
     )
+    # Make Env Step Count the default x-axis for every metric in this run.
+    # Existing runs without this still expose Env Step Count as a metric and
+    # can be re-axised in the W&B panel UI.
+    wandb.define_metric("Env Step Count")
+    wandb.define_metric("*", step_metric="Env Step Count")
+
     agent = DQNAgent(env_name=args.env_name, args=args)
     agent.run(episodes=args.episodes)
