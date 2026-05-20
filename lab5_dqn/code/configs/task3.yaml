@@ -8,7 +8,7 @@ env_name: ALE/Pong-v5
 save_dir: ./results/task3
 wandb_project: DLP-Lab5-DQN-Pong
 wandb_run_name: task3-enhanced-v2
-episodes: 3000                   # convergence expected by ~1.5M env steps with new wrappers
+episodes: 3000  # convergence expected by ~1.5M env steps with new wrappers
 
 # Optimization / replay
 batch_size: 32

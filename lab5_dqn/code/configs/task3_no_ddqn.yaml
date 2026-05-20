@@ -11,7 +11,7 @@ episodes: 5000
 
 # Optimization / replay
 batch_size: 32
-memory_size: 100000
+memory_size: 300000
 lr: 1.0e-4
 discount_factor: 0.99
 grad_clip: 10.0
@@ -19,16 +19,16 @@ grad_clip: 10.0
 # Exploration
 epsilon_start: 1.0
 epsilon_decay: 0.999996
-epsilon_min: 0.05
+epsilon_min: 0.01
 
 # Training schedule
-target_update_frequency: 1000
+target_update_frequency: 5000
 replay_start_size: 50000
 max_episode_steps: 27000
 train_per_step: 1
 
 # Evaluation
-num_eval_episodes: 5
+num_eval_episodes: 20
 best_reward_init: -21.0
 
 # Enhancements — DDQN OFF
@@ -40,6 +40,10 @@ per_beta_start: 0.4
 per_beta_anneal_steps: 1000000
 loss_type: huber
 
+# Atari env-side wrappers (NEW)
+disable_sticky_actions: true     # repeat_action_probability=0.0
+pong_action_subset: true         # {NOOP, RIGHT, LEFT} only
+
 # Task 3 grading
 score_threshold: 19.0
-snapshot_steps: [600000, 1000000, 1500000]
+snapshot_steps: [600000, 800000, 1000000, 1250000, 1500000, 2000000, 2500000, 3000000]
