@@ -1,21 +1,64 @@
 #!/usr/bin/env bash
-# Evaluate a Task 1 (CartPole-v1) snapshot.
-# Run from the lab5_dqn/ project root:
-#     bash code/eval_task1.sh  # uses best snapshot
-#     bash code/eval_task1.sh --model-path results/task1/best_model.pt --episodes 20
-#     bash code/eval_task1.sh --no-video  # skip mp4 saving
+# Evaluate the Task 1 (CartPole-v1) snapshot.
+#
+# Run from the submission root (the directory that contains code/ and the
+# LAB5_*_task*.pt files):
+#     bash code/eval_task1.sh                       # auto-discovers LAB5_*_task1.pt
+#     bash code/eval_task1.sh --with-video          # also save mp4 videos
+#     bash code/eval_task1.sh --model-path /path/to/file.pt --episodes 20
+#
+# Default behavior runs 20 episodes with seeds 0..19 and skips mp4 generation
+# so the output matches the grading-protocol screenshot style.
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-DEFAULT_MODEL="${PROJECT_ROOT}/results/task1/best_model.pt"
-DEFAULT_OUTPUT_DIR="${PROJECT_ROOT}/videos/task1"
 
-if [[ " $* " != *" --model-path "* ]]; then
-    set -- --model-path "${DEFAULT_MODEL}" "$@"
-fi
-if [[ " $* " != *" --output-dir "* ]]; then
-    set -- "$@" --output-dir "${DEFAULT_OUTPUT_DIR}"
+# ----- Decide whether to default to --no-video -----
+VIDEO_FLAG="--no-video"
+USER_ARGS=()
+USER_SET_MODEL=false
+USER_SET_OUTPUT=false
+for arg in "$@"; do
+    case "$arg" in
+        --with-video) VIDEO_FLAG="" ;;
+        --no-video)   VIDEO_FLAG="--no-video" ;;
+        --model-path) USER_SET_MODEL=true;  USER_ARGS+=("$arg") ;;
+        --output-dir) USER_SET_OUTPUT=true; USER_ARGS+=("$arg") ;;
+        *)            USER_ARGS+=("$arg") ;;
+    esac
+done
+
+# ----- Auto-discover the Task 1 model if --model-path was not given -----
+if ! $USER_SET_MODEL; then
+    shopt -s nullglob
+    SUBMISSION_MATCHES=("${PROJECT_ROOT}"/LAB5_*_task1.pt)
+    shopt -u nullglob
+
+    if [[ ${#SUBMISSION_MATCHES[@]} -gt 0 ]]; then
+        DEFAULT_MODEL="${SUBMISSION_MATCHES[0]}"
+    elif [[ -f "${PROJECT_ROOT}/results/task1/best_model.pt" ]]; then
+        DEFAULT_MODEL="${PROJECT_ROOT}/results/task1/best_model.pt"
+    else
+        echo "ERROR: no Task 1 checkpoint found." >&2
+        echo "       Looked for: ${PROJECT_ROOT}/LAB5_*_task1.pt" >&2
+        echo "                   ${PROJECT_ROOT}/results/task1/best_model.pt" >&2
+        echo "       Pass --model-path /path/to/model.pt explicitly." >&2
+        exit 1
+    fi
+    USER_ARGS=(--model-path "${DEFAULT_MODEL}" "${USER_ARGS[@]+"${USER_ARGS[@]}"}")
 fi
 
-python "${SCRIPT_DIR}/test_cartpole.py" "$@"
+# ----- Default output dir for any videos that do get produced -----
+if ! $USER_SET_OUTPUT; then
+    USER_ARGS+=(--output-dir "${PROJECT_ROOT}/videos/task1")
+fi
+
+echo "Project root: ${PROJECT_ROOT}"
+echo "Video:        ${VIDEO_FLAG:-on}"
+echo
+
+# shellcheck disable=SC2086
+python3 "${SCRIPT_DIR}/test_cartpole.py" \
+    ${VIDEO_FLAG} \
+    "${USER_ARGS[@]}"
